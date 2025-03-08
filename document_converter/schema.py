@@ -4,8 +4,9 @@ import base64
 
 
 class ImageData(BaseModel):
-    content: str = Field(..., description="Base64 encoded image content")
-    format: str = Field(..., description="Image format (e.g., 'png', 'jpg')")
+    type: str = Field(..., description="Type of image (e.g., 'table', 'picture')")
+    filename: str = Field(..., description="Filename of the image")
+    image: str = Field(..., description="Base64 encoded image content")
 
 
 class ConversionResult(BaseModel):
@@ -13,6 +14,7 @@ class ConversionResult(BaseModel):
     markdown: Optional[str] = Field(None, description="Converted markdown content")
     images: List[ImageData] = Field(default_factory=list, description="Images extracted from the document")
     error: Optional[str] = Field(None, description="Error message if conversion failed")
+    page_content: Optional[Dict[int, str]] = Field(None, description="Markdown content organized by page number")
 
 
 class BatchConversionResult(BaseModel):

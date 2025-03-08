@@ -76,11 +76,22 @@ class DoclingDocumentConversion(DocumentConversionBase):
         return pipeline_options
 
     @staticmethod
-    def _process_document_images(conv_res) -> Tuple[str, List[ImageData]]:
+    def _process_document_images(conv_res) -> Tuple[str, List[ImageData], Optional[Dict[int, str]]]:
         images = []
         table_counter = 0
         picture_counter = 0
         content_md = conv_res.document.export_to_markdown(image_mode=ImageRefMode.PLACEHOLDER)
+        
+        # Extract page-by-page content
+        page_content = {}
+        num_pages = conv_res.document.num_pages()
+        for page_num in range(1, num_pages + 1):
+            page_md = conv_res.document.export_to_markdown(
+                image_mode=ImageRefMode.PLACEHOLDER,
+                page_no=page_num
+            )
+            if page_md.strip():  # Only add non-empty pages
+                page_content[page_num] = page_md
 
         for element, _level in conv_res.document.iterate_items():
             if isinstance(element, (TableItem, PictureItem)) and element.image:
@@ -96,11 +107,17 @@ class DoclingDocumentConversion(DocumentConversionBase):
                     image_name = f"picture-{picture_counter}.png"
                     image_type = "picture"
                     content_md = content_md.replace("<!-- image -->", image_name, 1)
+                    
+                    # Also replace image placeholders in page content
+                    for page_num, page_md in page_content.items():
+                        if "<!-- image -->" in page_md:
+                            page_content[page_num] = page_md.replace("<!-- image -->", image_name, 1)
+                            break
 
                 image_bytes = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
                 images.append(ImageData(type=image_type, filename=image_name, image=image_bytes))
 
-        return content_md, images
+        return content_md, images, page_content
 
     def convert(
         self,
@@ -126,8 +143,8 @@ class DoclingDocumentConversion(DocumentConversionBase):
             logging.error(f"Failed to convert {filename}: {conv_res.errors[0].error_message}")
             return ConversionResult(filename=doc_filename, error=conv_res.errors[0].error_message)
 
-        content_md, images = self._process_document_images(conv_res)
-        return ConversionResult(filename=doc_filename, markdown=content_md, images=images)
+        content_md, images, page_content = self._process_document_images(conv_res)
+        return ConversionResult(filename=doc_filename, markdown=content_md, images=images, page_content=page_content)
 
     def convert_batch(
         self,
@@ -155,8 +172,8 @@ class DoclingDocumentConversion(DocumentConversionBase):
                 results.append(ConversionResult(filename=conv_res.input.name, error=conv_res.errors[0].error_message))
                 continue
 
-            content_md, images = self._process_document_images(conv_res)
-            results.append(ConversionResult(filename=doc_filename, markdown=content_md, images=images))
+            content_md, images, page_content = self._process_document_images(conv_res)
+            results.append(ConversionResult(filename=doc_filename, markdown=content_md, images=images, page_content=page_content))
 
         return results
 
@@ -165,65 +182,105 @@ class DocumentConverterService:
     def __init__(self, document_converter: DocumentConversionBase):
         self.document_converter = document_converter
 
-    def convert_document(self, document: Tuple[str, BytesIO], **kwargs) -> ConversionResult:
+    def convert_document(self, document: Tuple[str, BytesIO], include_page_numbers: bool = False, **kwargs) -> ConversionResult:
         result = self.document_converter.convert(document, **kwargs)
         if result.error:
             logging.error(f"Failed to convert {document[0]}: {result.error}")
             raise HTTPException(status_code=500, detail=result.error)
+            
+        # If page numbers are requested, format the markdown with page numbers
+        if include_page_numbers and result.page_content:
+            result.markdown = self.get_markdown_with_page_numbers(result)
+            
         return result
 
-    def convert_documents(self, documents: List[Tuple[str, BytesIO]], **kwargs) -> List[ConversionResult]:
-        return self.document_converter.convert_batch(documents, **kwargs)
+    def convert_documents(self, documents: List[Tuple[str, BytesIO]], include_page_numbers: bool = False, **kwargs) -> List[ConversionResult]:
+        results = self.document_converter.convert_batch(documents, **kwargs)
+        
+        # If page numbers are requested, format the markdown with page numbers for each result
+        if include_page_numbers:
+            for result in results:
+                if result.page_content and not result.error:
+                    result.markdown = self.get_markdown_with_page_numbers(result)
+                    
+        return results
 
     def convert_document_task(
         self,
         document: Tuple[str, bytes],
+        include_page_numbers: bool = False,
         **kwargs,
     ) -> ConversionResult:
         document = (document[0], BytesIO(document[1]))
-        return self.document_converter.convert(document, **kwargs)
+        result = self.document_converter.convert(document, **kwargs)
+        
+        # If page numbers are requested, format the markdown with page numbers
+        if include_page_numbers and result.page_content and not result.error:
+            result.markdown = self.get_markdown_with_page_numbers(result)
+            
+        return result
 
     def convert_documents_task(
         self,
         documents: List[Tuple[str, bytes]],
+        include_page_numbers: bool = False,
         **kwargs,
     ) -> List[ConversionResult]:
         documents = [(filename, BytesIO(file)) for filename, file in documents]
-        return self.document_converter.convert_batch(documents, **kwargs)
+        results = self.document_converter.convert_batch(documents, **kwargs)
+        
+        # If page numbers are requested, format the markdown with page numbers for each result
+        if include_page_numbers:
+            for result in results:
+                if result.page_content and not result.error:
+                    result.markdown = self.get_markdown_with_page_numbers(result)
+                    
+        return results
 
-    def get_single_document_task_result(self, job_id: str) -> ConversionJobResult:
-        """Get the status and result of a document conversion job.
+    def get_single_document_task_result(self, job_id: str, include_page_numbers: bool = False) -> ConversionJobResult:
+        """
+        Get the result of a single document conversion task.
+
+        Args:
+            job_id: The ID of the job
+            include_page_numbers: Whether to include page numbers in the markdown
 
         Returns:
-        - IN_PROGRESS: When task is still running
-        - SUCCESS: When conversion completed successfully
-        - FAILURE: When task failed or conversion had errors
+            ConversionJobResult: The result of the conversion job
         """
         # Import celery_app only when needed to avoid circular imports
         from worker.celery_config import celery_app
-
+        
         task = AsyncResult(job_id, app=celery_app)
         if task.state == 'PENDING':
             return ConversionJobResult(job_id=job_id, status="IN_PROGRESS")
-
+        elif task.state == 'FAILURE':
+            return ConversionJobResult(job_id=job_id, status="FAILURE", error=str(task.result))
         elif task.state == 'SUCCESS':
             result = task.get()
             # Check if the conversion result contains an error
             if result.get('error'):
                 return ConversionJobResult(job_id=job_id, status="FAILURE", error=result['error'])
-
-            return ConversionJobResult(job_id=job_id, status="SUCCESS", result=ConversionResult(**result))
-
+            
+            conversion_result = ConversionResult(**result)
+            
+            # If page numbers are requested, format the markdown with page numbers
+            if include_page_numbers and conversion_result.page_content and not conversion_result.error:
+                conversion_result.markdown = self.get_markdown_with_page_numbers(conversion_result)
+                
+            return ConversionJobResult(job_id=job_id, status="SUCCESS", result=conversion_result)
         else:
             return ConversionJobResult(job_id=job_id, status="FAILURE", error=str(task.result))
 
-    def get_batch_conversion_task_result(self, job_id: str) -> BatchConversionJobResult:
-        """Get the status and results of a batch conversion job.
+    def get_batch_conversion_task_result(self, job_id: str, include_page_numbers: bool = False) -> BatchConversionJobResult:
+        """Get the status and results of a batch document conversion job.
+
+        Args:
+            job_id: The ID of the batch job
+            include_page_numbers: Whether to include page numbers in the markdown
 
         Returns:
-        - IN_PROGRESS: When task is still running
-        - SUCCESS: A batch is successful as long as the task is successful
-        - FAILURE: When the task fails for any reason
+            BatchConversionJobResult: The result of the batch conversion job
         """
         # Import celery_app only when needed to avoid circular imports
         from worker.celery_config import celery_app
@@ -232,195 +289,193 @@ class DocumentConverterService:
         if task.state == 'PENDING':
             return BatchConversionJobResult(job_id=job_id, status="IN_PROGRESS")
 
-        # Task completed successfully, but need to check individual conversion results
-        if task.state == 'SUCCESS':
-            conversion_results = task.get()
-            job_results = []
+        elif task.state == 'SUCCESS':
+            batch_results = task.get()
+            conversion_results = []
 
-            for result in conversion_results:
+            for result in batch_results:
                 if result.get('error'):
-                    job_result = ConversionJobResult(status="FAILURE", error=result['error'])
-                else:
-                    job_result = ConversionJobResult(
-                        status="SUCCESS", result=ConversionResult(**result).model_dump(exclude_unset=True)
+                    conversion_results.append(
+                        ConversionJobResult(
+                            job_id=job_id,
+                            status="FAILURE",
+                            error=result['error']
+                        )
                     )
-                job_results.append(job_result)
+                else:
+                    conversion_result = ConversionResult(**result)
+                    
+                    # If page numbers are requested, format the markdown with page numbers
+                    if include_page_numbers and conversion_result.page_content and not conversion_result.error:
+                        conversion_result.markdown = self.get_markdown_with_page_numbers(conversion_result)
+                        
+                    conversion_results.append(
+                        ConversionJobResult(
+                            job_id=job_id,
+                            status="SUCCESS",
+                            result=conversion_result
+                        )
+                    )
 
-            return BatchConversionJobResult(job_id=job_id, status="SUCCESS", conversion_results=job_results)
+            return BatchConversionJobResult(
+                job_id=job_id,
+                status="SUCCESS",
+                conversion_results=conversion_results
+            )
+        else:
+            return BatchConversionJobResult(
+                job_id=job_id,
+                status="FAILURE",
+                error=str(task.result)
+            )
 
-        return BatchConversionJobResult(job_id=job_id, status="FAILURE", error=str(task.result))
-
-    def chunk_document_from_job(self, job_id: str, max_tokens: int = 512, merge_peers: bool = True) -> ChunkingResult:
+    def chunk_document_from_job(
+        self, 
+        job_id: str, 
+        max_tokens: int = 512, 
+        merge_peers: bool = True,
+        include_page_numbers: bool = False
+    ) -> ChunkingResult:
         """
-        Retrieve a completed conversion job and chunk the resulting document.
-        
+        Chunk a document from a conversion job.
+
         Args:
-            job_id: The ID of the completed conversion job
+            job_id: The ID of the conversion job
             max_tokens: Maximum number of tokens per chunk
             merge_peers: Whether to merge undersized peer chunks
-            
+            include_page_numbers: Whether to include page number references in chunk metadata
+
         Returns:
-            ChunkingResult containing the chunks extracted from the document
+            ChunkingResult: The chunking result
         """
-        # Get the conversion job result
-        job_result = self.get_single_document_task_result(job_id)
-        
-        # Check if the job is completed successfully
-        if job_result.status != "SUCCESS":
+        # Get the conversion result
+        conversion_job_result = self.get_single_document_task_result(job_id)
+        if conversion_job_result.status != "SUCCESS" or not conversion_job_result.result:
             return ChunkingResult(
                 job_id=job_id,
-                filename=job_result.result.filename if job_result.result else "unknown",
-                error=f"Cannot chunk document: job status is {job_result.status}. {job_result.error or ''}"
+                filename="unknown",
+                error=conversion_job_result.error or "Conversion job not successful"
             )
+
+        conversion_result = conversion_job_result.result
         
-        # Access the markdown content
-        result = job_result.result
-        if not result or not result.markdown:
-            return ChunkingResult(
-                job_id=job_id,
-                filename=result.filename if result else "unknown",
-                error="Cannot chunk document: no markdown content available"
-            )
-            
+        # Create a chunker
+        from docling.chunking import HybridChunker
+        chunker = HybridChunker(max_tokens=max_tokens, merge_peers=merge_peers)
+        
         try:
-            # Convert markdown to a DoclingDocument
-            from docling.document_converter import DocumentConverter
-            from docling.datamodel.base_models import DocumentStream
-            
-            # Create a document stream from the markdown
-            markdown_stream = DocumentStream(
-                name=f"{result.filename}.md",
-                stream=io.BytesIO(result.markdown.encode('utf-8'))
+            # Get the document from the conversion result
+            doc_converter = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=self._setup_default_pipeline_options())}
             )
             
-            # Convert the markdown to a DoclingDocument
-            converter = DocumentConverter()
-            doc_result = converter.convert(markdown_stream)
-            
-            if doc_result.errors:
-                return ChunkingResult(
-                    job_id=job_id,
-                    filename=result.filename,
-                    error=f"Error creating DoclingDocument: {doc_result.errors[0].error_message}"
-                )
-                
-            docling_doc = doc_result.document
-            
-            # Initialize the SDPMChunker with the specified parameters
-            # We're using the default embedding model "minishlab/potion-base-8M"
-            chunker = SDPMChunker(
-                chunk_size=max_tokens,
-                threshold=0.5,  # Similarity threshold (0-1)
-                min_sentences=1,  # Initial sentences per chunk
-                skip_window=1     # Number of chunks to skip when looking for similarities
+            # Create a document stream from the markdown content
+            doc_stream = DocumentStream(
+                name=conversion_result.filename,
+                stream=BytesIO(conversion_result.markdown.encode('utf-8'))
             )
             
-            # Perform chunking
+            # Convert the markdown to a document
+            doc_result = doc_converter.convert(doc_stream)
+            
+            # Chunk the document
             chunks = []
-            try:
-                # Extract text content from docling_doc
-                # The DoclingDocument doesn't have a 'text' attribute directly
-                # Instead, we'll extract it from the markdown content
-                text_content = result.markdown  # Use the markdown content directly
-                
-                # Chunk the text using SDPMChunker
-                chonkie_chunks = chunker.chunk(text_content)
-                
-                for chunk in chonkie_chunks:
-                    # Get the plain text from the chunk
-                    plain_text = chunk.text
+            for chunk in chunker.chunk(doc_result.document):
+                # Add page number information to chunk metadata if requested
+                if include_page_numbers and conversion_result.page_content:
+                    # Extract page numbers from the chunk's doc_items if available
+                    page_numbers = set()
+                    if 'doc_items' in chunk.meta:
+                        for item in chunk.meta['doc_items']:
+                            if 'prov' in item:
+                                for prov in item['prov']:
+                                    if 'page_no' in prov:
+                                        page_numbers.add(prov['page_no'])
                     
-                    # Create additional metadata dictionary
-                    additional_metadata = {
-                        "token_count": chunk.token_count,
-                        "start_index": chunk.start_index,
-                        "end_index": chunk.end_index
-                    }
-                    
-                    # Add sentence information if available
-                    if hasattr(chunk, "sentences") and chunk.sentences:
-                        additional_metadata["sentence_count"] = len(chunk.sentences)
-                    
-                    chunks.append(Chunk(
-                        text=plain_text,
-                        metadata=additional_metadata
-                    ))
-            except Exception as e:
-                logging.error(f"Error during chunking process: {str(e)}")
-                return ChunkingResult(
-                    job_id=job_id,
-                    filename=result.filename,
-                    error=f"Error during chunking process: {str(e)}"
-                )
+                    if page_numbers:
+                        chunk.meta['page_numbers'] = sorted(list(page_numbers))
                 
+                chunks.append(Chunk(text=chunk.text, metadata=chunk.meta))
+            
             return ChunkingResult(
                 job_id=job_id,
-                filename=result.filename,
+                filename=conversion_result.filename,
                 chunks=chunks
             )
-            
         except Exception as e:
             logging.error(f"Error chunking document: {str(e)}")
             return ChunkingResult(
                 job_id=job_id,
-                filename=result.filename,
+                filename=conversion_result.filename,
                 error=f"Error chunking document: {str(e)}"
             )
 
-    def chunk_batch_documents_from_job(self, job_id: str, max_tokens: int = 512, merge_peers: bool = True) -> List[ChunkingResult]:
+    def chunk_batch_documents_from_job(
+        self, 
+        job_id: str, 
+        max_tokens: int = 512, 
+        merge_peers: bool = True,
+        include_page_numbers: bool = False
+    ) -> List[ChunkingResult]:
         """
-        Retrieve a completed batch conversion job and chunk all the resulting documents.
-        
+        Chunk a batch of documents from a conversion job.
+
         Args:
-            job_id: The ID of the completed batch conversion job
+            job_id: The ID of the batch conversion job
             max_tokens: Maximum number of tokens per chunk
             merge_peers: Whether to merge undersized peer chunks
-            
+            include_page_numbers: Whether to include page number references in chunk metadata
+
         Returns:
-            List of ChunkingResult containing the chunks extracted from each document
+            List[ChunkingResult]: The chunking results for each document
         """
         # Get the batch conversion job result
         batch_result = self.get_batch_conversion_task_result(job_id)
         
         # Check if the batch job is completed successfully
         if batch_result.status != "SUCCESS":
-            return [ChunkingResult(
-                job_id=job_id,
-                filename="batch",
-                error=f"Cannot chunk documents: batch job status is {batch_result.status}. {batch_result.error or ''}"
-            )]
-        
-        chunking_results = []
+            return [
+                ChunkingResult(
+                    job_id=job_id,
+                    filename="unknown",
+                    error=f"Cannot chunk documents: batch job status is {batch_result.status}. {batch_result.error or ''}"
+                )
+            ]
         
         # Process each document in the batch
+        chunking_results = []
         for job_result in batch_result.conversion_results:
             if job_result.status != "SUCCESS" or not job_result.result:
-                # Skip failed jobs
-                chunking_results.append(ChunkingResult(
-                    job_id=job_id,
-                    filename=job_result.result.filename if job_result.result else "unknown",
-                    error=f"Cannot chunk document: job status is {job_result.status}. {job_result.error or ''}"
-                ))
+                chunking_results.append(
+                    ChunkingResult(
+                        job_id=job_id,
+                        filename="unknown",
+                        error=f"Cannot chunk document: job status is {job_result.status}. {job_result.error or ''}"
+                    )
+                )
                 continue
-                
+            
             result = job_result.result
             if not result.markdown:
-                chunking_results.append(ChunkingResult(
-                    job_id=job_id,
-                    filename=result.filename,
-                    error="Cannot chunk document: no markdown content available"
-                ))
+                chunking_results.append(
+                    ChunkingResult(
+                        job_id=job_id,
+                        filename=result.filename,
+                        error="Cannot chunk document: no markdown content available"
+                    )
+                )
                 continue
-                
+            
             try:
                 # Convert markdown to a DoclingDocument
                 from docling.document_converter import DocumentConverter
                 from docling.datamodel.base_models import DocumentStream
+                from docling.chunking import HybridChunker
                 
                 # Create a document stream from the markdown
                 markdown_stream = DocumentStream(
                     name=f"{result.filename}.md",
-                    stream=io.BytesIO(result.markdown.encode('utf-8'))
+                    stream=BytesIO(result.markdown.encode('utf-8'))
                 )
                 
                 # Convert the markdown to a DoclingDocument
@@ -428,91 +483,79 @@ class DocumentConverterService:
                 doc_result = converter.convert(markdown_stream)
                 
                 if doc_result.errors:
-                    chunking_results.append(ChunkingResult(
-                        job_id=job_id,
-                        filename=result.filename,
-                        error=f"Error creating DoclingDocument: {doc_result.errors[0].error_message}"
-                    ))
+                    chunking_results.append(
+                        ChunkingResult(
+                            job_id=job_id,
+                            filename=result.filename,
+                            error=f"Error creating DoclingDocument: {doc_result.errors[0].error_message}"
+                        )
+                    )
                     continue
-                    
+                
                 docling_doc = doc_result.document
                 
-                # Initialize the SDPMChunker with the specified parameters
-                # We're using the default embedding model "minishlab/potion-base-8M"
-                chunker = SDPMChunker(
-                    chunk_size=max_tokens,
-                    threshold=0.5,  # Similarity threshold (0-1)
-                    min_sentences=1,  # Initial sentences per chunk
-                    skip_window=1     # Number of chunks to skip when looking for similarities
-                )
+                # Initialize the chunker with the specified parameters
+                chunker = HybridChunker(max_tokens=max_tokens, merge_peers=merge_peers)
                 
                 # Perform chunking
                 chunks = []
-                try:
-                    # Extract text content from docling_doc
-                    # The DoclingDocument doesn't have a 'text' attribute directly
-                    # Instead, we'll extract it from the markdown content
-                    text_content = result.markdown  # Use the markdown content directly
+                for chunk in chunker.chunk(docling_doc):
+                    # Add page number information to chunk metadata if requested
+                    if include_page_numbers and result.page_content:
+                        # Extract page numbers from the chunk's doc_items if available
+                        page_numbers = set()
+                        if 'doc_items' in chunk.meta:
+                            for item in chunk.meta['doc_items']:
+                                if 'prov' in item:
+                                    for prov in item['prov']:
+                                        if 'page_no' in prov:
+                                            page_numbers.add(prov['page_no'])
+                        
+                        if page_numbers:
+                            chunk.meta['page_numbers'] = sorted(list(page_numbers))
                     
-                    # Chunk the text using SDPMChunker
-                    chonkie_chunks = chunker.chunk(text_content)
-                    
-                    for chunk in chonkie_chunks:
-                        # Get the plain text from the chunk
-                        plain_text = chunk.text
-                        
-                        # Create additional metadata dictionary
-                        additional_metadata = {
-                            "token_count": chunk.token_count,
-                            "start_index": chunk.start_index,
-                            "end_index": chunk.end_index
-                        }
-                        
-                        # Add sentence information if available
-                        if hasattr(chunk, "sentences") and chunk.sentences:
-                            additional_metadata["sentence_count"] = len(chunk.sentences)
-                        
-                        chunks.append(Chunk(
-                            text=plain_text,
-                            metadata=additional_metadata
-                        ))
-                except Exception as e:
-                    logging.error(f"Error during chunking process: {str(e)}")
-                    chunking_results.append(ChunkingResult(
+                    chunks.append(Chunk(text=chunk.text, metadata=chunk.meta))
+                
+                chunking_results.append(
+                    ChunkingResult(
                         job_id=job_id,
                         filename=result.filename,
-                        error=f"Error during chunking process: {str(e)}"
-                    ))
-                    continue
-                
-                chunking_results.append(ChunkingResult(
-                    job_id=job_id,
-                    filename=result.filename,
-                    chunks=chunks
-                ))
-                
+                        chunks=chunks
+                    )
+                )
             except Exception as e:
                 logging.error(f"Error chunking document {result.filename}: {str(e)}")
-                chunking_results.append(ChunkingResult(
-                    job_id=job_id,
-                    filename=result.filename,
-                    error=f"Error chunking document: {str(e)}"
-                ))
-                
+                chunking_results.append(
+                    ChunkingResult(
+                        job_id=job_id,
+                        filename=result.filename,
+                        error=f"Error chunking document: {str(e)}"
+                    )
+                )
+        
         return chunking_results
 
-    def chunk_text_directly(self, text: str, filename: str = "input.txt", max_tokens: int = 512, merge_peers: bool = True) -> ChunkingResult:
+    def chunk_text_directly(
+        self, 
+        text: str, 
+        filename: str = "input.txt", 
+        max_tokens: int = 512, 
+        merge_peers: bool = True,
+        include_page_numbers: bool = False
+    ) -> ChunkingResult:
         """
-        Chunk text directly without requiring a conversion job.
+        Chunk text directly without going through the document conversion process.
         
         Args:
-            text: The text content to chunk
+            text: The text to chunk
             filename: A name to identify the source (for reporting purposes)
             max_tokens: Maximum number of tokens per chunk
             merge_peers: Whether to merge undersized peer chunks
+            include_page_numbers: This parameter is ignored for direct text chunking, 
+                                 but included for API consistency
             
         Returns:
-            ChunkingResult containing the chunks extracted from the text
+            ChunkingResult: The chunking result
         """
         try:
             # Initialize the SDPMChunker with the specified parameters
@@ -569,3 +612,40 @@ class DocumentConverterService:
                 filename=filename,
                 error=f"Error chunking text: {str(e)}"
             )
+
+    def convert_document_with_pages(self, document: Tuple[str, BytesIO], **kwargs) -> ConversionResult:
+        """
+        Convert a document and include page-by-page content in the result.
+        
+        Args:
+            document: A tuple containing the filename and file content
+            **kwargs: Additional arguments to pass to the document converter
+            
+        Returns:
+            ConversionResult: The conversion result with page-by-page content
+        """
+        result = self.document_converter.convert(document, **kwargs)
+        if result.error:
+            logging.error(f"Failed to convert {document[0]}: {result.error}")
+            raise HTTPException(status_code=500, detail=result.error)
+        return result
+
+    def get_markdown_with_page_numbers(self, result: ConversionResult) -> str:
+        """
+        Format the conversion result as markdown with page numbers.
+        
+        Args:
+            result: The conversion result
+            
+        Returns:
+            str: Markdown content with page numbers
+        """
+        if not result.page_content:
+            return result.markdown or ""
+            
+        formatted_content = []
+        for page_num, content in sorted(result.page_content.items()):
+            if content.strip():
+                formatted_content.append(f"## Page {page_num}\n\n{content}\n")
+                
+        return "\n".join(formatted_content)
