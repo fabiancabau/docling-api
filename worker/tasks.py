@@ -15,10 +15,14 @@ def convert_document_task(
     document: Tuple[str, bytes],
     extract_tables: bool = False,
     image_resolution_scale: int = IMAGE_RESOLUTION_SCALE,
+    include_page_numbers: bool = False,
 ) -> Dict[str, Any]:
     document_service = DocumentConverterService(document_converter=DoclingDocumentConversion())
     result = document_service.convert_document_task(
-        document, extract_tables=extract_tables, image_resolution_scale=image_resolution_scale
+        document, 
+        extract_tables=extract_tables, 
+        image_resolution_scale=image_resolution_scale,
+        include_page_numbers=include_page_numbers,
     )
     return result.model_dump(exclude_unset=True)
 
@@ -29,9 +33,13 @@ def convert_documents_task(
     documents: List[Tuple[str, bytes]],
     extract_tables: bool = False,
     image_resolution_scale: int = IMAGE_RESOLUTION_SCALE,
+    include_page_numbers: bool = False,
 ) -> List[Dict[str, Any]]:
     document_service = DocumentConverterService(document_converter=DoclingDocumentConversion())
     results = document_service.convert_documents_task(
-        documents, extract_tables=extract_tables, image_resolution_scale=image_resolution_scale
+        documents, 
+        extract_tables=extract_tables, 
+        image_resolution_scale=image_resolution_scale,
+        include_page_numbers=include_page_numbers,
     )
     return [result.model_dump(exclude_unset=True) for result in results]

@@ -40,6 +40,9 @@ class BatchConversionJobResult(BaseModel):
 class Chunk(BaseModel):
     text: str = Field(..., description="The plain text content of the chunk")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata associated with the chunk")
+    page_numbers: Optional[List[int]] = Field(None, description="List of page numbers this chunk spans across")
+    start_page: Optional[int] = Field(None, description="The page number where this chunk starts")
+    end_page: Optional[int] = Field(None, description="The page number where this chunk ends")
 
 
 class ChunkingResult(BaseModel):
@@ -54,6 +57,7 @@ class TextChunkingRequest(BaseModel):
     filename: Optional[str] = Field("input.txt", description="A name to identify the source (for reporting purposes)")
     max_tokens: int = Field(512, ge=64, le=2048, description="Maximum number of tokens per chunk")
     merge_peers: bool = Field(True, description="Whether to merge undersized peer chunks")
+    include_page_numbers: bool = Field(True, description="Whether to include page number references in chunk metadata")
     
     class Config:
         json_schema_extra = {
@@ -61,6 +65,7 @@ class TextChunkingRequest(BaseModel):
                 "text": "This is the text content that needs to be chunked. It can be as long as needed.",
                 "filename": "example.txt",
                 "max_tokens": 512,
-                "merge_peers": True
+                "merge_peers": True,
+                "include_page_numbers": True
             }
         }
