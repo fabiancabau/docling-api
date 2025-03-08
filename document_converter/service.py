@@ -250,7 +250,7 @@ class DocumentConverterService:
 
         return BatchConversionJobResult(job_id=job_id, status="FAILURE", error=str(task.result))
 
-    def chunk_document_from_job(self, job_id: str, max_tokens: int = 512, merge_peers: bool = True, include_page_numbers: bool = False) -> ChunkingResult:
+    def chunk_document_from_job(self, job_id: str, max_tokens: int = 512, merge_peers: bool = True) -> ChunkingResult:
         """
         Retrieve a completed conversion job and chunk the resulting document.
         
@@ -258,7 +258,6 @@ class DocumentConverterService:
             job_id: The ID of the completed conversion job
             max_tokens: Maximum number of tokens per chunk
             merge_peers: Whether to merge undersized peer chunks
-            include_page_numbers: Whether to include page number references in chunk metadata
             
         Returns:
             ChunkingResult containing the chunks extracted from the document
@@ -342,10 +341,6 @@ class DocumentConverterService:
                     if hasattr(chunk, "sentences") and chunk.sentences:
                         additional_metadata["sentence_count"] = len(chunk.sentences)
                     
-                    # Add page number information if available
-                    if include_page_numbers and hasattr(chunk, "page_number"):
-                        additional_metadata["page_number"] = chunk.page_number
-                    
                     chunks.append(Chunk(
                         text=plain_text,
                         metadata=additional_metadata
@@ -372,7 +367,7 @@ class DocumentConverterService:
                 error=f"Error chunking document: {str(e)}"
             )
 
-    def chunk_batch_documents_from_job(self, job_id: str, max_tokens: int = 512, merge_peers: bool = True, include_page_numbers: bool = False) -> List[ChunkingResult]:
+    def chunk_batch_documents_from_job(self, job_id: str, max_tokens: int = 512, merge_peers: bool = True) -> List[ChunkingResult]:
         """
         Retrieve a completed batch conversion job and chunk all the resulting documents.
         
@@ -380,7 +375,6 @@ class DocumentConverterService:
             job_id: The ID of the completed batch conversion job
             max_tokens: Maximum number of tokens per chunk
             merge_peers: Whether to merge undersized peer chunks
-            include_page_numbers: Whether to include page number references in chunk metadata
             
         Returns:
             List of ChunkingResult containing the chunks extracted from each document
@@ -478,10 +472,6 @@ class DocumentConverterService:
                         if hasattr(chunk, "sentences") and chunk.sentences:
                             additional_metadata["sentence_count"] = len(chunk.sentences)
                         
-                        # Add page number information if available
-                        if include_page_numbers and hasattr(chunk, "page_number"):
-                            additional_metadata["page_number"] = chunk.page_number
-                        
                         chunks.append(Chunk(
                             text=plain_text,
                             metadata=additional_metadata
@@ -511,7 +501,7 @@ class DocumentConverterService:
                 
         return chunking_results
 
-    def chunk_text_directly(self, text: str, filename: str = "input.txt", max_tokens: int = 512, merge_peers: bool = True, include_page_numbers: bool = False) -> ChunkingResult:
+    def chunk_text_directly(self, text: str, filename: str = "input.txt", max_tokens: int = 512, merge_peers: bool = True) -> ChunkingResult:
         """
         Chunk text directly without requiring a conversion job.
         
@@ -520,7 +510,6 @@ class DocumentConverterService:
             filename: A name to identify the source (for reporting purposes)
             max_tokens: Maximum number of tokens per chunk
             merge_peers: Whether to merge undersized peer chunks
-            include_page_numbers: Whether to include page number references in chunk metadata
             
         Returns:
             ChunkingResult containing the chunks extracted from the text
@@ -554,10 +543,6 @@ class DocumentConverterService:
                     # Add sentence information if available
                     if hasattr(chunk, "sentences") and chunk.sentences:
                         additional_metadata["sentence_count"] = len(chunk.sentences)
-                    
-                    # Add page number information if available
-                    if include_page_numbers and hasattr(chunk, "page_number"):
-                        additional_metadata["page_number"] = chunk.page_number
                     
                     chunks.append(Chunk(
                         text=plain_text,

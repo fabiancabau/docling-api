@@ -341,10 +341,6 @@ async def chunk_document_from_job(
         True,
         description="Whether to merge undersized peer chunks (used for internal configuration)"
     ),
-    include_page_numbers: bool = Query(
-        False,
-        description="Whether to include page number references in chunk metadata (when available)"
-    ),
 ):
     try:
         # Attempt to get the chunking result
@@ -352,7 +348,6 @@ async def chunk_document_from_job(
             job_id=job_id,
             max_tokens=max_tokens,
             merge_peers=merge_peers,
-            include_page_numbers=include_page_numbers,
         )
         
         # Return error response if there's an error
@@ -403,10 +398,6 @@ async def chunk_batch_documents_from_job(
         True,
         description="Whether to merge undersized peer chunks (used for internal configuration)"
     ),
-    include_page_numbers: bool = Query(
-        False,
-        description="Whether to include page number references in chunk metadata (when available)"
-    ),
 ):
     try:
         # Attempt to get the chunking results
@@ -414,7 +405,6 @@ async def chunk_batch_documents_from_job(
             job_id=job_id,
             max_tokens=max_tokens,
             merge_peers=merge_peers,
-            include_page_numbers=include_page_numbers,
         )
         
         # Check if there were errors in the batch
@@ -465,7 +455,6 @@ async def chunk_text_directly(
             filename=request.filename,
             max_tokens=request.max_tokens,
             merge_peers=request.merge_peers,
-            include_page_numbers=request.include_page_numbers,
         )
         
         # Return error response if there's an error

@@ -52,15 +52,13 @@ class TextChunkingRequest(BaseModel):
     filename: Optional[str] = Field("input.txt", description="A name to identify the source (for reporting purposes)")
     max_tokens: int = Field(512, ge=64, le=2048, description="Maximum number of tokens per chunk")
     merge_peers: bool = Field(True, description="Whether to merge undersized peer chunks")
-    include_page_numbers: bool = Field(False, description="Whether to include page number references in chunk metadata")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "text": "This is the text content that needs to be chunked. It can be as long as needed.",
                 "filename": "example.txt",
                 "max_tokens": 512,
-                "merge_peers": True,
-                "include_page_numbers": False
+                "merge_peers": True
             }
         }
