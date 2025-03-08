@@ -34,12 +34,14 @@
   - Image extraction and processing
   - Multi-language OCR support (French, German, Spanish, English, Italian, Portuguese etc)
   - Configurable image resolution scaling
+  - Document chunking for LLM processing and RAG applications
 
 - **API Endpoints**:
   - Synchronous single document conversion
   - Synchronous batch document conversion
   - Asynchronous single document conversion with job tracking
   - Asynchronous batch conversion with job tracking
+  - Document chunking for completed conversion jobs
 
 - **Processing Modes**:
   - CPU-only processing for standard deployments
@@ -234,6 +236,76 @@ curl -X POST "http://localhost:8080/batch-conversion-jobs" \
   -H "Content-Type: multipart/form-data" \
   -F "documents=@/path/to/document1.pdf" \
   -F "documents=@/path/to/document2.pdf"
+```
+
+### Document Chunking
+
+After converting documents, you can generate text chunks optimized for LLM processing:
+
+1. Chunk a single converted document:
+
+```bash
+curl -X GET "http://localhost:8080/conversion-jobs/{job_id}/chunks?max_tokens=512&merge_peers=true&include_page_numbers=true" \
+  -H "accept: application/json"
+```
+
+2. Chunk all documents from a batch conversion:
+
+```bash
+curl -X GET "http://localhost:8080/batch-conversion-jobs/{job_id}/chunks?max_tokens=512&merge_peers=true&include_page_numbers=true" \
+  -H "accept: application/json"
+```
+
+3. Chunk text directly (without requiring a conversion job):
+
+```bash
+curl -X POST "http://localhost:8080/text/chunk" \
+  -H "accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "This is the text content that needs to be chunked. It can be as long as needed.",
+    "filename": "example.txt",
+    "max_tokens": 512,
+    "merge_peers": true,
+    "include_page_numbers": false
+  }'
+```
+
+Chunking parameters:
+- `max_tokens`: Maximum number of tokens per chunk (range: 64-2048, default: 512)
+- `merge_peers`: Whether to merge undersized peer chunks (default: true)
+- `include_page_numbers`: Whether to include page number references in chunk metadata (default: false)
+
+#### Chunking Implementation
+
+The API uses the Semantic Double-Pass Merging (SDPM) algorithm from the Chonkie library to produce high-quality chunks with improved context preservation. This chunker:
+
+1. Groups content by semantic similarity
+2. Merges similar groups within a skip window
+3. Connects related content that may not be consecutive in the text
+4. Preserves contextual relationships between different parts of the document
+
+The chunker is particularly effective for documents with recurring themes or concepts spread throughout the text.
+
+The response includes:
+```json
+{
+  "job_id": "the-job-id",
+  "filename": "document-name",
+  "chunks": [
+    {
+      "text": "Plain text content of the chunk without additional context",
+      "metadata": {
+        "token_count": 123,
+        "start_index": 0,
+        "end_index": 512,
+        "sentence_count": 5,
+        "page_number": 1
+      }
+    }
+  ],
+  "error": null  // Error message if chunking failed
+}
 ```
 
 ## Configuration Options

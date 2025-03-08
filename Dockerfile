@@ -8,8 +8,10 @@ RUN apt-get update && \
     apt-get install -y libgl1 libglib2.0-0 && \
     apt-get clean
 
-# Copy only dependency files and README (required for package installation)
-COPY pyproject.toml uv.lock README.md ./
+# Copy only dependency files and create a dummy README
+COPY pyproject.toml uv.lock ./
+# Create a dummy README.md file to satisfy package requirements
+RUN echo "# Placeholder README" > README.md
 
 # Create venv and install project for model downloads
 RUN python -m venv /app/.venv && \
@@ -24,7 +26,8 @@ ENV HF_HOME=/app/.cache/huggingface \
 RUN . /app/.venv/bin/activate && \
     mkdir -p /app/.cache && \
     python -c 'from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True);' && \
-    python -c 'import easyocr; reader = easyocr.Reader(["fr", "de", "es", "en", "it", "pt"], gpu=True); print("EasyOCR models downloaded successfully")'
+    python -c 'import easyocr; reader = easyocr.Reader(["fr", "de", "es", "en", "it", "pt"], gpu=True); print("EasyOCR models downloaded successfully")' && \
+    python -c 'from chonkie import SDPMChunker; chunker = SDPMChunker(embedding_model="minishlab/potion-base-8M"); print("Chonkie models downloaded successfully")'
 
 # Final stage with CUDA support
 FROM python:3.12-slim-bookworm AS runtime
@@ -37,12 +40,15 @@ RUN apt-get update && \
     apt-get install -y redis-server libgl1 libglib2.0-0 && \
     apt-get clean
 
-# Copy dependency files and models from builder
+# Copy model cache from builder - this rarely changes
 COPY --from=builder --chown=app:app /app/.cache /app/.cache/
 COPY --from=builder --chown=app:app /app/.venv /app/.venv/
 
+# Create dummy README and copy dependency files
+RUN echo "# Placeholder README" > README.md
+COPY --chown=app:app pyproject.toml uv.lock ./
+
 # Copy project files from disk
-COPY --chown=app:app pyproject.toml uv.lock README.md ./
 COPY --chown=app:app document_converter/ ./document_converter/
 COPY --chown=app:app worker/ ./worker/
 COPY --chown=app:app main.py ./

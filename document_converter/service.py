@@ -2,7 +2,15 @@ import base64
 import logging
 from abc import ABC, abstractmethod
 from io import BytesIO
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Dict, Any
+import io
+import json
+import re
+import os
+import uuid
+from datetime import datetime
+from threading import Thread
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from celery.result import AsyncResult
 from docling.datamodel.base_models import InputFormat, DocumentStream
@@ -10,12 +18,14 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions, EasyOcrOption
 from docling.document_converter import PdfFormatOption, DocumentConverter
 from docling_core.types.doc import ImageRefMode, TableItem, PictureItem
 from fastapi import HTTPException
+from transformers import AutoTokenizer
+from chonkie import SDPMChunker
 
-from document_converter.schema import BatchConversionJobResult, ConversionJobResult, ConversionResult, ImageData
+from document_converter.schema import BatchConversionJobResult, ConversionJobResult, ConversionResult, ImageData, ChunkingResult, Chunk
 from document_converter.utils import handle_csv_file
 
 logging.basicConfig(level=logging.INFO)
-IMAGE_RESOLUTION_SCALE = 4
+IMAGE_RESOLUTION_SCALE = int(os.getenv("IMAGE_RESOLUTION_SCALE", "1"))
 
 
 class DocumentConversionBase(ABC):
@@ -124,6 +134,7 @@ class DoclingDocumentConversion(DocumentConversionBase):
         documents: List[Tuple[str, BytesIO]],
         extract_tables: bool = False,
         image_resolution_scale: int = IMAGE_RESOLUTION_SCALE,
+        fallback_sequential_numbering: bool = False,
     ) -> List[ConversionResult]:
         pipeline_options = self._update_pipeline_options(extract_tables, image_resolution_scale)
         doc_converter = DocumentConverter(
@@ -188,8 +199,10 @@ class DocumentConverterService:
         - SUCCESS: When conversion completed successfully
         - FAILURE: When task failed or conversion had errors
         """
+        # Import celery_app only when needed to avoid circular imports
+        from worker.celery_config import celery_app
 
-        task = AsyncResult(job_id)
+        task = AsyncResult(job_id, app=celery_app)
         if task.state == 'PENDING':
             return ConversionJobResult(job_id=job_id, status="IN_PROGRESS")
 
@@ -212,8 +225,10 @@ class DocumentConverterService:
         - SUCCESS: A batch is successful as long as the task is successful
         - FAILURE: When the task fails for any reason
         """
+        # Import celery_app only when needed to avoid circular imports
+        from worker.celery_config import celery_app
 
-        task = AsyncResult(job_id)
+        task = AsyncResult(job_id, app=celery_app)
         if task.state == 'PENDING':
             return BatchConversionJobResult(job_id=job_id, status="IN_PROGRESS")
 
@@ -234,3 +249,338 @@ class DocumentConverterService:
             return BatchConversionJobResult(job_id=job_id, status="SUCCESS", conversion_results=job_results)
 
         return BatchConversionJobResult(job_id=job_id, status="FAILURE", error=str(task.result))
+
+    def chunk_document_from_job(self, job_id: str, max_tokens: int = 512, merge_peers: bool = True, include_page_numbers: bool = False) -> ChunkingResult:
+        """
+        Retrieve a completed conversion job and chunk the resulting document.
+        
+        Args:
+            job_id: The ID of the completed conversion job
+            max_tokens: Maximum number of tokens per chunk
+            merge_peers: Whether to merge undersized peer chunks
+            include_page_numbers: Whether to include page number references in chunk metadata
+            
+        Returns:
+            ChunkingResult containing the chunks extracted from the document
+        """
+        # Get the conversion job result
+        job_result = self.get_single_document_task_result(job_id)
+        
+        # Check if the job is completed successfully
+        if job_result.status != "SUCCESS":
+            return ChunkingResult(
+                job_id=job_id,
+                filename=job_result.result.filename if job_result.result else "unknown",
+                error=f"Cannot chunk document: job status is {job_result.status}. {job_result.error or ''}"
+            )
+        
+        # Access the markdown content
+        result = job_result.result
+        if not result or not result.markdown:
+            return ChunkingResult(
+                job_id=job_id,
+                filename=result.filename if result else "unknown",
+                error="Cannot chunk document: no markdown content available"
+            )
+            
+        try:
+            # Convert markdown to a DoclingDocument
+            from docling.document_converter import DocumentConverter
+            from docling.datamodel.base_models import DocumentStream
+            
+            # Create a document stream from the markdown
+            markdown_stream = DocumentStream(
+                name=f"{result.filename}.md",
+                stream=io.BytesIO(result.markdown.encode('utf-8'))
+            )
+            
+            # Convert the markdown to a DoclingDocument
+            converter = DocumentConverter()
+            doc_result = converter.convert(markdown_stream)
+            
+            if doc_result.errors:
+                return ChunkingResult(
+                    job_id=job_id,
+                    filename=result.filename,
+                    error=f"Error creating DoclingDocument: {doc_result.errors[0].error_message}"
+                )
+                
+            docling_doc = doc_result.document
+            
+            # Initialize the SDPMChunker with the specified parameters
+            # We're using the default embedding model "minishlab/potion-base-8M"
+            chunker = SDPMChunker(
+                chunk_size=max_tokens,
+                threshold=0.5,  # Similarity threshold (0-1)
+                min_sentences=1,  # Initial sentences per chunk
+                skip_window=1     # Number of chunks to skip when looking for similarities
+            )
+            
+            # Perform chunking
+            chunks = []
+            try:
+                # Extract text content from docling_doc
+                # The DoclingDocument doesn't have a 'text' attribute directly
+                # Instead, we'll extract it from the markdown content
+                text_content = result.markdown  # Use the markdown content directly
+                
+                # Chunk the text using SDPMChunker
+                chonkie_chunks = chunker.chunk(text_content)
+                
+                for chunk in chonkie_chunks:
+                    # Get the plain text from the chunk
+                    plain_text = chunk.text
+                    
+                    # Create additional metadata dictionary
+                    additional_metadata = {
+                        "token_count": chunk.token_count,
+                        "start_index": chunk.start_index,
+                        "end_index": chunk.end_index
+                    }
+                    
+                    # Add sentence information if available
+                    if hasattr(chunk, "sentences") and chunk.sentences:
+                        additional_metadata["sentence_count"] = len(chunk.sentences)
+                    
+                    # Add page number information if available
+                    if include_page_numbers and hasattr(chunk, "page_number"):
+                        additional_metadata["page_number"] = chunk.page_number
+                    
+                    chunks.append(Chunk(
+                        text=plain_text,
+                        metadata=additional_metadata
+                    ))
+            except Exception as e:
+                logging.error(f"Error during chunking process: {str(e)}")
+                return ChunkingResult(
+                    job_id=job_id,
+                    filename=result.filename,
+                    error=f"Error during chunking process: {str(e)}"
+                )
+                
+            return ChunkingResult(
+                job_id=job_id,
+                filename=result.filename,
+                chunks=chunks
+            )
+            
+        except Exception as e:
+            logging.error(f"Error chunking document: {str(e)}")
+            return ChunkingResult(
+                job_id=job_id,
+                filename=result.filename,
+                error=f"Error chunking document: {str(e)}"
+            )
+
+    def chunk_batch_documents_from_job(self, job_id: str, max_tokens: int = 512, merge_peers: bool = True, include_page_numbers: bool = False) -> List[ChunkingResult]:
+        """
+        Retrieve a completed batch conversion job and chunk all the resulting documents.
+        
+        Args:
+            job_id: The ID of the completed batch conversion job
+            max_tokens: Maximum number of tokens per chunk
+            merge_peers: Whether to merge undersized peer chunks
+            include_page_numbers: Whether to include page number references in chunk metadata
+            
+        Returns:
+            List of ChunkingResult containing the chunks extracted from each document
+        """
+        # Get the batch conversion job result
+        batch_result = self.get_batch_conversion_task_result(job_id)
+        
+        # Check if the batch job is completed successfully
+        if batch_result.status != "SUCCESS":
+            return [ChunkingResult(
+                job_id=job_id,
+                filename="batch",
+                error=f"Cannot chunk documents: batch job status is {batch_result.status}. {batch_result.error or ''}"
+            )]
+        
+        chunking_results = []
+        
+        # Process each document in the batch
+        for job_result in batch_result.conversion_results:
+            if job_result.status != "SUCCESS" or not job_result.result:
+                # Skip failed jobs
+                chunking_results.append(ChunkingResult(
+                    job_id=job_id,
+                    filename=job_result.result.filename if job_result.result else "unknown",
+                    error=f"Cannot chunk document: job status is {job_result.status}. {job_result.error or ''}"
+                ))
+                continue
+                
+            result = job_result.result
+            if not result.markdown:
+                chunking_results.append(ChunkingResult(
+                    job_id=job_id,
+                    filename=result.filename,
+                    error="Cannot chunk document: no markdown content available"
+                ))
+                continue
+                
+            try:
+                # Convert markdown to a DoclingDocument
+                from docling.document_converter import DocumentConverter
+                from docling.datamodel.base_models import DocumentStream
+                
+                # Create a document stream from the markdown
+                markdown_stream = DocumentStream(
+                    name=f"{result.filename}.md",
+                    stream=io.BytesIO(result.markdown.encode('utf-8'))
+                )
+                
+                # Convert the markdown to a DoclingDocument
+                converter = DocumentConverter()
+                doc_result = converter.convert(markdown_stream)
+                
+                if doc_result.errors:
+                    chunking_results.append(ChunkingResult(
+                        job_id=job_id,
+                        filename=result.filename,
+                        error=f"Error creating DoclingDocument: {doc_result.errors[0].error_message}"
+                    ))
+                    continue
+                    
+                docling_doc = doc_result.document
+                
+                # Initialize the SDPMChunker with the specified parameters
+                # We're using the default embedding model "minishlab/potion-base-8M"
+                chunker = SDPMChunker(
+                    chunk_size=max_tokens,
+                    threshold=0.5,  # Similarity threshold (0-1)
+                    min_sentences=1,  # Initial sentences per chunk
+                    skip_window=1     # Number of chunks to skip when looking for similarities
+                )
+                
+                # Perform chunking
+                chunks = []
+                try:
+                    # Extract text content from docling_doc
+                    # The DoclingDocument doesn't have a 'text' attribute directly
+                    # Instead, we'll extract it from the markdown content
+                    text_content = result.markdown  # Use the markdown content directly
+                    
+                    # Chunk the text using SDPMChunker
+                    chonkie_chunks = chunker.chunk(text_content)
+                    
+                    for chunk in chonkie_chunks:
+                        # Get the plain text from the chunk
+                        plain_text = chunk.text
+                        
+                        # Create additional metadata dictionary
+                        additional_metadata = {
+                            "token_count": chunk.token_count,
+                            "start_index": chunk.start_index,
+                            "end_index": chunk.end_index
+                        }
+                        
+                        # Add sentence information if available
+                        if hasattr(chunk, "sentences") and chunk.sentences:
+                            additional_metadata["sentence_count"] = len(chunk.sentences)
+                        
+                        # Add page number information if available
+                        if include_page_numbers and hasattr(chunk, "page_number"):
+                            additional_metadata["page_number"] = chunk.page_number
+                        
+                        chunks.append(Chunk(
+                            text=plain_text,
+                            metadata=additional_metadata
+                        ))
+                except Exception as e:
+                    logging.error(f"Error during chunking process: {str(e)}")
+                    chunking_results.append(ChunkingResult(
+                        job_id=job_id,
+                        filename=result.filename,
+                        error=f"Error during chunking process: {str(e)}"
+                    ))
+                    continue
+                
+                chunking_results.append(ChunkingResult(
+                    job_id=job_id,
+                    filename=result.filename,
+                    chunks=chunks
+                ))
+                
+            except Exception as e:
+                logging.error(f"Error chunking document {result.filename}: {str(e)}")
+                chunking_results.append(ChunkingResult(
+                    job_id=job_id,
+                    filename=result.filename,
+                    error=f"Error chunking document: {str(e)}"
+                ))
+                
+        return chunking_results
+
+    def chunk_text_directly(self, text: str, filename: str = "input.txt", max_tokens: int = 512, merge_peers: bool = True, include_page_numbers: bool = False) -> ChunkingResult:
+        """
+        Chunk text directly without requiring a conversion job.
+        
+        Args:
+            text: The text content to chunk
+            filename: A name to identify the source (for reporting purposes)
+            max_tokens: Maximum number of tokens per chunk
+            merge_peers: Whether to merge undersized peer chunks
+            include_page_numbers: Whether to include page number references in chunk metadata
+            
+        Returns:
+            ChunkingResult containing the chunks extracted from the text
+        """
+        try:
+            # Initialize the SDPMChunker with the specified parameters
+            chunker = SDPMChunker(
+                chunk_size=max_tokens,
+                threshold=0.5,  # Similarity threshold (0-1)
+                min_sentences=1,  # Initial sentences per chunk
+                skip_window=1     # Number of chunks to skip when looking for similarities
+            )
+            
+            # Perform chunking
+            chunks = []
+            try:
+                # Chunk the text using SDPMChunker
+                chonkie_chunks = chunker.chunk(text)
+                
+                for chunk in chonkie_chunks:
+                    # Get the plain text from the chunk
+                    plain_text = chunk.text
+                    
+                    # Create additional metadata dictionary
+                    additional_metadata = {
+                        "token_count": chunk.token_count,
+                        "start_index": chunk.start_index,
+                        "end_index": chunk.end_index
+                    }
+                    
+                    # Add sentence information if available
+                    if hasattr(chunk, "sentences") and chunk.sentences:
+                        additional_metadata["sentence_count"] = len(chunk.sentences)
+                    
+                    # Add page number information if available
+                    if include_page_numbers and hasattr(chunk, "page_number"):
+                        additional_metadata["page_number"] = chunk.page_number
+                    
+                    chunks.append(Chunk(
+                        text=plain_text,
+                        metadata=additional_metadata
+                    ))
+            except Exception as e:
+                logging.error(f"Error during chunking process: {str(e)}")
+                return ChunkingResult(
+                    job_id="direct",
+                    filename=filename,
+                    error=f"Error during chunking process: {str(e)}"
+                )
+                
+            return ChunkingResult(
+                job_id="direct",
+                filename=filename,
+                chunks=chunks
+            )
+            
+        except Exception as e:
+            logging.error(f"Error chunking text: {str(e)}")
+            return ChunkingResult(
+                job_id="direct",
+                filename=filename,
+                error=f"Error chunking text: {str(e)}"
+            )

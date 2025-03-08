@@ -16,6 +16,7 @@ dependencies = [
     "flower>=2.0.1",
     "redis>=5.2.0",
     "gunicorn>=23.0.0",
+    "chonkie[semantic]>=0.4.0",
 ]
 
 [build-system]
