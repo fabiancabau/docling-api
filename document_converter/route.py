@@ -9,7 +9,8 @@ from document_converter.schema import (
     ConversionJobResult,
     ConversionResult,
     ChunkingResult,
-    TextChunkingRequest
+    TextChunkingRequest,
+    HealthCheckResponse
 )
 from document_converter.service import DocumentConverterService, DoclingDocumentConversion
 from document_converter.utils import is_file_format_supported
@@ -352,6 +353,7 @@ async def get_batch_conversion_job_status(
 
 @router.get(
     "/health",
+    response_model=HealthCheckResponse,
     responses={
         200: {"description": "All services are healthy"},
         500: {"description": "One or more services are unhealthy"}
