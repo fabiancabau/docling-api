@@ -1,26 +1,44 @@
-# First, build the application and install dependencies
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+ARG CPU_ONLY=false
 
 WORKDIR /app
 
-# Download models in builder stage
+# Install build dependencies
 RUN apt-get update && \
-    apt-get install -y libgl1 libglib2.0-0 && \
-    apt-get clean
+    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy only dependency files and create a dummy README
 COPY pyproject.toml uv.lock ./
 # Create a dummy README.md file to satisfy package requirements
 RUN echo "# Placeholder README" > README.md
 
-# Create venv and install project for model downloads
-RUN python -m venv /app/.venv && \
-    . /app/.venv/bin/activate && \
-    uv pip install -e .
+# Install dependencies but not the project itself
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project
 
-# Set up cache directories and download models
-ENV HF_HOME=/app/.cache/huggingface \
-    TORCH_HOME=/app/.cache/torch
+# Copy the rest of the project
+COPY . .
+
+# Better GPU detection: Check both architecture and if NVIDIA is available
+RUN ARCH=$(uname -m) && \
+    if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
+    USE_GPU=false; \
+    else \
+    USE_GPU=true; \
+    fi && \
+    echo "Detected GPU availability: $USE_GPU" && \
+    # For PyTorch installation with architecture detection
+    uv pip uninstall -y torch torchvision torchaudio || true && \
+    if [ "$USE_GPU" = "false" ]; then \
+    # For CPU or ARM architectures or no NVIDIA
+    echo "Installing PyTorch for CPU" && \
+    uv pip install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
+    else \
+    # For x86_64 with GPU support
+    echo "Installing PyTorch with CUDA support" && \
+    uv pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; \
+    fi
 
 # Download models
 RUN . /app/.venv/bin/activate && \
@@ -29,16 +47,29 @@ RUN . /app/.venv/bin/activate && \
     python -c 'import easyocr; reader = easyocr.Reader(["fr", "de", "es", "en", "it", "pt"], gpu=True); print("EasyOCR models downloaded successfully")' && \
     python -c 'from chonkie import SDPMChunker; chunker = SDPMChunker(embedding_model="minishlab/potion-base-8M"); print("Chonkie models downloaded successfully")'
 
-# Final stage with CUDA support
-FROM python:3.12-slim-bookworm AS runtime
+# Download models for the pipeline
+RUN uv run python -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True)"
 
-ARG CPU_ONLY=false
+# Pre-download EasyOCR models with better GPU detection
+RUN ARCH=$(uname -m) && \
+    if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
+    echo "Downloading EasyOCR models for CPU" && \
+    uv run python -c "import easyocr; reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=False); print('EasyOCR CPU models downloaded successfully')"; \
+    else \
+    echo "Downloading EasyOCR models with GPU support" && \
+    uv run python -c "import easyocr; reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=True); print('EasyOCR GPU models downloaded successfully')"; \
+    fi
+    
+RUN uv run python -c 'from chonkie import SDPMChunker; chunker = SDPMChunker(embedding_model="minishlab/potion-base-8M"); print("Chonkie models downloaded successfully")'
+
+# Production stage
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 WORKDIR /app
 
 # Install runtime dependencies
 RUN apt-get update && \
-    apt-get install -y redis-server libgl1 libglib2.0-0 && \
-    apt-get clean
+    apt-get install -y --no-install-recommends redis-server libgl1 libglib2.0-0 curl && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy model cache from builder - this rarely changes
 COPY --from=builder --chown=app:app /app/.cache /app/.cache/
@@ -57,31 +88,24 @@ COPY --chown=app:app main.py ./
 ENV PYTHONPATH=/app \
     HF_HOME=/app/.cache/huggingface \
     TORCH_HOME=/app/.cache/torch \
-    OMP_NUM_THREADS=4
+    PYTHONPATH=/app \
+    OMP_NUM_THREADS=4 \
+    UV_COMPILE_BYTECODE=1
 
-# Create app user
-RUN useradd -m app && \
-    chown -R app:app /app /tmp && \
-    python -m venv /app/.venv && \
-    chown -R app:app /app/.venv
+# Create a non-root user
+RUN useradd --create-home app && \
+    mkdir -p /app && \
+    chown -R app:app /app /tmp
 
-USER app
-
-# Install dependencies and project
-RUN . /app/.venv/bin/activate && \
-    cd /app && \
-    pip install -e .
-
-# Install PyTorch with CUDA support
-RUN . /app/.venv/bin/activate && \
-    if [ "$CPU_ONLY" = "true" ]; then \
-    pip install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
-    else \
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; \
-    fi
-
+# Copy the virtual environment from the builder stage
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-EXPOSE 8080
+# Copy necessary files for the application
+COPY --chown=app:app . .
 
-CMD ["python", "-m", "uvicorn", "--port", "8080", "--host", "0.0.0.0", "main:app"]
+# Switch to non-root user
+USER app
+
+EXPOSE 8080
+CMD ["uvicorn", "main:app", "--port", "8080", "--host", "0.0.0.0"]
