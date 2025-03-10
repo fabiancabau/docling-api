@@ -59,7 +59,7 @@ RUN ARCH=$(uname -m) && \
     echo "Downloading EasyOCR models with GPU support" && \
     uv run python -c "import easyocr; reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=True); print('EasyOCR GPU models downloaded successfully')"; \
     fi
-    
+
 RUN uv run python -c 'from chonkie import SDPMChunker; chunker = SDPMChunker(embedding_model="minishlab/potion-base-8M"); print("Chonkie models downloaded successfully")'
 
 # Production stage

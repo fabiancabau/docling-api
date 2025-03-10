@@ -17,6 +17,7 @@ dependencies = [
     "redis>=5.2.0",
     "gunicorn>=23.0.0",
     "chonkie[semantic]>=0.4.0",
+    "tokenizers>=0.19,<0.20",
 ]
 
 [build-system]
