@@ -91,7 +91,7 @@ class DoclingDocumentConversion(DocumentConversionBase):
                 page_no=page_num
             )
             if page_md.strip():  # Only add non-empty pages
-                page_content[page_num] = page_md
+                page_content[str(page_num)] = page_md
 
         for element, _level in conv_res.document.iterate_items():
             if isinstance(element, (TableItem, PictureItem)) and element.image:
