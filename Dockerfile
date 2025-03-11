@@ -1,111 +1,77 @@
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
-ARG CPU_ONLY=false
+# Use a base image with Python
+FROM python:3.12-slim-bookworm
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    curl \
+    wget \
+    git \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy UV from official image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Enable bytecode compilation and set link mode for better performance
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_SYSTEM_PYTHON=1 \
+    HF_HOME=/tmp/ \
+    TORCH_HOME=/tmp/ \
+    OMP_NUM_THREADS=4
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 && \
-    rm -rf /var/lib/apt/lists/*
+# Create a minimal README.md to satisfy the build requirements
+RUN echo "# Docling API" > README.md
 
-# Copy only dependency files and create a dummy README
+# Install dependencies first (for better layer caching)
 COPY pyproject.toml uv.lock ./
-# Create a dummy README.md file to satisfy package requirements
-RUN echo "# Placeholder README" > README.md
 
-# Install dependencies but not the project itself
+# Install dependencies with caching
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project
 
-# Copy the rest of the project
+# Install PyTorch separately based on CPU_ONLY flag
+ARG CPU_ONLY=false
+RUN if [ "$CPU_ONLY" = "true" ]; then \
+    uv pip install --system torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
+    else \
+    uv pip install --system torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; \
+    fi
+
+# Install project dependencies for model downloads
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system docling
+RUN python -c 'from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True);'
+
+RUN uv pip install --system easyocr
+
+# Pre-download EasyOCR models in compatible groups
+RUN python -c 'import easyocr; \
+    reader = easyocr.Reader(["fr", "de", "es", "en", "it", "pt"], gpu=True); \
+    print("EasyOCR models downloaded successfully")'
+
+RUN uv pip install sentence-transformers
+
+RUN uv pip install "chonkie[semantic, model2vec]"
+
+# Download Chonkie models (using Model2Vec for better performance)
+RUN python -c 'from chonkie import SDPMChunker; \
+    sdpm_chunker = SDPMChunker(embedding_model="minishlab/potion-base-8M"); \
+    print("Chonkie models downloaded successfully")'
+
+# Copy the application code
 COPY . .
 
-# Better GPU detection: Check both architecture and if NVIDIA is available
-RUN ARCH=$(uname -m) && \
-    if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
-    USE_GPU=false; \
-    else \
-    USE_GPU=true; \
-    fi && \
-    echo "Detected GPU availability: $USE_GPU" && \
-    # For PyTorch installation with architecture detection
-    uv pip uninstall -y torch torchvision torchaudio || true && \
-    if [ "$USE_GPU" = "false" ]; then \
-    # For CPU or ARM architectures or no NVIDIA
-    echo "Installing PyTorch for CPU" && \
-    uv pip install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
-    else \
-    # For x86_64 with GPU support
-    echo "Installing PyTorch with CUDA support" && \
-    uv pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; \
-    fi
-
-# Download models
-RUN . /app/.venv/bin/activate && \
-    mkdir -p /app/.cache && \
-    python -c 'from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True);' && \
-    python -c 'import easyocr; reader = easyocr.Reader(["fr", "de", "es", "en", "it", "pt"], gpu=True); print("EasyOCR models downloaded successfully")' && \
-    python -c 'from chonkie import SDPMChunker; chunker = SDPMChunker(embedding_model="minishlab/potion-base-8M"); print("Chonkie models downloaded successfully")'
-
-# Download models for the pipeline
-RUN uv run python -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True)"
-
-# Pre-download EasyOCR models with better GPU detection
-RUN ARCH=$(uname -m) && \
-    if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
-    echo "Downloading EasyOCR models for CPU" && \
-    uv run python -c "import easyocr; reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=False); print('EasyOCR CPU models downloaded successfully')"; \
-    else \
-    echo "Downloading EasyOCR models with GPU support" && \
-    uv run python -c "import easyocr; reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=True); print('EasyOCR GPU models downloaded successfully')"; \
-    fi
-
-RUN uv run python -c 'from chonkie import SDPMChunker; chunker = SDPMChunker(embedding_model="minishlab/potion-base-8M"); print("Chonkie models downloaded successfully")'
-
-# Production stage
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
-WORKDIR /app
-
-# Install runtime dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends redis-server libgl1 libglib2.0-0 curl && \
-    rm -rf /var/lib/apt/lists/*
-
-# Copy model cache from builder - this rarely changes
-COPY --from=builder --chown=app:app /app/.cache /app/.cache/
-COPY --from=builder --chown=app:app /app/.venv /app/.venv/
-
-# Create dummy README and copy dependency files
-RUN echo "# Placeholder README" > README.md
-COPY --chown=app:app pyproject.toml uv.lock ./
-
-# Copy project files from disk
-COPY --chown=app:app document_converter/ ./document_converter/
-COPY --chown=app:app worker/ ./worker/
-COPY --chown=app:app main.py ./
-
-# Set up Python environment
-ENV PYTHONPATH=/app \
-    HF_HOME=/app/.cache/huggingface \
-    TORCH_HOME=/app/.cache/torch \
-    PYTHONPATH=/app \
-    OMP_NUM_THREADS=4 \
-    UV_COMPILE_BYTECODE=1
-
-# Create a non-root user
-RUN useradd --create-home app && \
-    mkdir -p /app && \
-    chown -R app:app /app /tmp
-
-# Copy the virtual environment from the builder stage
-COPY --from=builder --chown=app:app /app/.venv /app/.venv
-ENV PATH="/app/.venv/bin:$PATH"
-
-# Copy necessary files for the application
-COPY --chown=app:app . .
-
-# Switch to non-root user
-USER app
+# Final sync to ensure everything is properly installed
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
 
 EXPOSE 8080
-CMD ["uvicorn", "main:app", "--port", "8080", "--host", "0.0.0.0"]
+
+# Use UV to run the application
+CMD ["uv", "run", "uvicorn", "--port", "8080", "--host", "0.0.0.0", "main:app"]

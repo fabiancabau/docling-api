@@ -18,7 +18,6 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions, EasyOcrOption
 from docling.document_converter import PdfFormatOption, DocumentConverter
 from docling_core.types.doc import ImageRefMode, TableItem, PictureItem
 from fastapi import HTTPException
-from transformers import AutoTokenizer
 from chonkie import SDPMChunker
 
 from document_converter.schema import BatchConversionJobResult, ConversionJobResult, ConversionResult, ImageData, ChunkingResult, Chunk
@@ -272,6 +271,13 @@ class DocumentConverterService:
             if result.get('error'):
                 return ConversionJobResult(job_id=job_id, status="FAILURE", error=result['error'])
             
+            # Ensure page_content is properly handled as a dictionary
+            if 'page_content' in result and result['page_content'] is not None:
+                if not isinstance(result['page_content'], dict):
+                    # If page_content is not a dict, set it to None to avoid type errors
+                    result['page_content'] = None
+                    logging.warning(f"Invalid page_content type in job {job_id}, expected dict but got {type(result['page_content'])}")
+            
             conversion_result = ConversionResult(**result)
             
             # If page numbers are requested, format the markdown with page numbers
@@ -313,6 +319,13 @@ class DocumentConverterService:
                         )
                     )
                 else:
+                    # Ensure page_content is properly handled as a dictionary
+                    if 'page_content' in result and result['page_content'] is not None:
+                        if not isinstance(result['page_content'], dict):
+                            # If page_content is not a dict, set it to None to avoid type errors
+                            result['page_content'] = None
+                            logging.warning(f"Invalid page_content type in batch job {job_id}, expected dict but got {type(result['page_content'])}")
+                    
                     conversion_result = ConversionResult(**result)
                     
                     # If page numbers are requested, format the markdown with page numbers
@@ -336,8 +349,7 @@ class DocumentConverterService:
             return BatchConversionJobResult(
                 job_id=job_id,
                 status="FAILURE",
-                error=str(task.result)
-            )
+                error=str(task.result))
 
     def chunk_document_from_job(
         self, 
@@ -358,298 +370,89 @@ class DocumentConverterService:
         Returns:
             ChunkingResult: The chunking result
         """
-        # Get the conversion result
-        conversion_job_result = self.get_single_document_task_result(job_id)
-        if conversion_job_result.status != "SUCCESS" or not conversion_job_result.result:
+        # Get the conversion result first
+        job_result = self.get_single_document_task_result(job_id, include_page_numbers=include_page_numbers)
+        
+        if job_result.status != "SUCCESS" or not job_result.result:
             return ChunkingResult(
                 job_id=job_id,
                 filename="unknown",
-                error=conversion_job_result.error or "Conversion job not successful"
+                error=f"Job failed or not completed: {job_result.error if job_result.error else 'Unknown error'}"
             )
-
-        conversion_result = conversion_job_result.result
-        
-        # If there's no markdown content, return an error
-        if not conversion_result.markdown:
-            return ChunkingResult(
-                job_id=job_id,
-                filename=conversion_result.filename,
-                error="Cannot chunk document: no markdown content available"
-            )
+            
+        # Initialize the chunker
+        chunker = SDPMChunker(
+            embedding_model="minishlab/potion-base-8M",
+            threshold=0.5,                              # Similarity threshold (0-1)
+            chunk_size=512,                             # Maximum tokens per chunk
+            min_sentences=1,                            # Initial sentences per chunk
+            skip_window=1                               # Number of chunks to skip when looking for similaritie
+        )
         
         try:
-            # Use the SDPMChunker to directly chunk the markdown content
-            chunker = SDPMChunker(
-                chunk_size=max_tokens,
-                threshold=0.5,
-                min_sentences=1,
-                skip_window=1
-            )
+            # Get the text content
+            text = job_result.result.markdown
+            filename = job_result.result.filename
             
-            # Chunk the text
-            chonkie_chunks = chunker.chunk(conversion_result.markdown)
+            # Process the text through the chunker
+            chunk_results = chunker(text)
             
-            # Process the chunks
+            # Convert chunker results to our Chunk model
             chunks = []
-            for chunk in chonkie_chunks:
-                # Get the plain text from the chunk
-                plain_text = chunk.text
+            current_page = None
+            
+            if include_page_numbers and job_result.result.page_content:
+                # Create a mapping of text positions to page numbers
+                page_map = {}
+                current_pos = 0
                 
-                # Create metadata dictionary
-                metadata = {
-                    "token_count": chunk.token_count,
-                    "start_index": chunk.start_index,
-                    "end_index": chunk.end_index
+                for page_num, content in sorted(job_result.result.page_content.items()):
+                    content_len = len(content)
+                    page_map[(current_pos, current_pos + content_len)] = int(page_num)
+                    current_pos += content_len
+                    
+            for chunk_result in chunk_results:
+                chunk_metadata = {
+                    "token_count": str(chunk_result.token_count),
+                    "sentence_count": str(len(chunk_result.sentences))
                 }
                 
-                # Add sentence information if available
-                if hasattr(chunk, "sentences") and chunk.sentences:
-                    metadata["sentence_count"] = len(chunk.sentences)
+                # If page numbers are requested and we have page content
+                if include_page_numbers and job_result.result.page_content:
+                    # Find the page numbers for this chunk
+                    chunk_pages = set()
+                    chunk_start = text.find(chunk_result.text)
+                    chunk_end = chunk_start + len(chunk_result.text)
+                    
+                    for (start, end), page in page_map.items():
+                        if (chunk_start < end and chunk_end > start):
+                            chunk_pages.add(page)
+                    
+                    if chunk_pages:
+                        chunk_metadata["start_page"] = str(min(chunk_pages))
+                        chunk_metadata["end_page"] = str(max(chunk_pages))
                 
-                # Try to extract page numbers if requested
-                if include_page_numbers and conversion_result.page_content:
-                    # Look for page markers in the text (e.g., "## Page 5")
-                    page_numbers = set()
-                    start_page = None
-                    end_page = None
-                    
-                    # Simple regex to find page markers
-                    import re
-                    page_markers = re.findall(r'##\s*Page\s+(\d+)', plain_text)
-                    
-                    if page_markers:
-                        for page_str in page_markers:
-                            try:
-                                page_no = int(page_str)
-                                page_numbers.add(page_no)
-                                
-                                # Track start and end pages
-                                if start_page is None or page_no < start_page:
-                                    start_page = page_no
-                                if end_page is None or page_no > end_page:
-                                    end_page = page_no
-                            except ValueError:
-                                pass
-                    
-                    # If no page markers found in the text, try to find which pages this chunk belongs to
-                    if not page_numbers and conversion_result.page_content:
-                        for page_num, page_content in conversion_result.page_content.items():
-                            if plain_text in page_content:
-                                page_numbers.add(page_num)
-                                
-                                # Track start and end pages
-                                if start_page is None or page_num < start_page:
-                                    start_page = page_num
-                                if end_page is None or page_num > end_page:
-                                    end_page = page_num
-                    
-                    if page_numbers:
-                        sorted_pages = sorted(list(page_numbers))
-                        chunk_obj = Chunk(
-                            text=plain_text,
-                            metadata=metadata,
-                            page_numbers=sorted_pages,
-                            start_page=start_page,
-                            end_page=end_page
-                        )
-                        
-                        # Also add page info to metadata
-                        chunk_obj.metadata['page_numbers'] = sorted_pages
-                        chunk_obj.metadata['start_page'] = start_page
-                        chunk_obj.metadata['end_page'] = end_page
-                        
-                        # Add a human-readable page range
-                        if start_page == end_page:
-                            chunk_obj.metadata['page_range'] = f"Page {start_page}"
-                        else:
-                            chunk_obj.metadata['page_range'] = f"Pages {start_page}-{end_page}"
-                    else:
-                        chunk_obj = Chunk(text=plain_text, metadata=metadata)
-                else:
-                    chunk_obj = Chunk(text=plain_text, metadata=metadata)
-                
-                chunks.append(chunk_obj)
+                chunks.append(Chunk(
+                    text=chunk_result.text,
+                    metadata=chunk_metadata,
+                    page_numbers=sorted(list(chunk_pages)) if include_page_numbers and chunk_pages else None,
+                    start_page=int(chunk_metadata["start_page"]) if "start_page" in chunk_metadata else None,
+                    end_page=int(chunk_metadata["end_page"]) if "end_page" in chunk_metadata else None
+                ))
             
             return ChunkingResult(
                 job_id=job_id,
-                filename=conversion_result.filename,
+                filename=filename,
                 chunks=chunks
             )
+            
         except Exception as e:
-            logging.error(f"Error chunking document: {str(e)}")
+            logging.error(f"Error chunking document from job {job_id}: {str(e)}")
             return ChunkingResult(
                 job_id=job_id,
-                filename=conversion_result.filename,
-                error=f"Error chunking document: {str(e)}"
+                filename=filename if 'filename' in locals() else "unknown",
+                error=f"Error during chunking: {str(e)}"
             )
-
-    def chunk_batch_documents_from_job(
-        self, 
-        job_id: str, 
-        max_tokens: int = 512, 
-        merge_peers: bool = True,
-        include_page_numbers: bool = False
-    ) -> List[ChunkingResult]:
-        """
-        Chunk a batch of documents from a conversion job.
-
-        Args:
-            job_id: The ID of the batch conversion job
-            max_tokens: Maximum number of tokens per chunk
-            merge_peers: Whether to merge undersized peer chunks
-            include_page_numbers: Whether to include page number references in chunk metadata
-
-        Returns:
-            List[ChunkingResult]: The chunking results for each document
-        """
-        # Get the batch conversion job result
-        batch_result = self.get_batch_conversion_task_result(job_id)
-        
-        # Check if the batch job is completed successfully
-        if batch_result.status != "SUCCESS":
-            return [
-                ChunkingResult(
-                    job_id=job_id,
-                    filename="unknown",
-                    error=f"Cannot chunk documents: batch job status is {batch_result.status}. {batch_result.error or ''}"
-                )
-            ]
-        
-        # Process each document in the batch
-        chunking_results = []
-        for job_result in batch_result.conversion_results:
-            if job_result.status != "SUCCESS" or not job_result.result:
-                chunking_results.append(
-                    ChunkingResult(
-                        job_id=job_id,
-                        filename="unknown",
-                        error=f"Cannot chunk document: job status is {job_result.status}. {job_result.error or ''}"
-                    )
-                )
-                continue
-            
-            result = job_result.result
-            if not result.markdown:
-                chunking_results.append(
-                    ChunkingResult(
-                        job_id=job_id,
-                        filename=result.filename,
-                        error="Cannot chunk document: no markdown content available"
-                    )
-                )
-                continue
-            
-            try:
-                # Use the SDPMChunker to directly chunk the markdown content
-                chunker = SDPMChunker(
-                    chunk_size=max_tokens,
-                    threshold=0.5,
-                    min_sentences=1,
-                    skip_window=1
-                )
-                
-                # Chunk the text
-                chonkie_chunks = chunker.chunk(result.markdown)
-                
-                # Process the chunks
-                chunks = []
-                for chunk in chonkie_chunks:
-                    # Get the plain text from the chunk
-                    plain_text = chunk.text
-                    
-                    # Create metadata dictionary
-                    metadata = {
-                        "token_count": chunk.token_count,
-                        "start_index": chunk.start_index,
-                        "end_index": chunk.end_index
-                    }
-                    
-                    # Add sentence information if available
-                    if hasattr(chunk, "sentences") and chunk.sentences:
-                        metadata["sentence_count"] = len(chunk.sentences)
-                    
-                    # Try to extract page numbers if requested
-                    if include_page_numbers and result.page_content:
-                        # Look for page markers in the text (e.g., "## Page 5")
-                        page_numbers = set()
-                        start_page = None
-                        end_page = None
-                        
-                        # Simple regex to find page markers
-                        import re
-                        page_markers = re.findall(r'##\s*Page\s+(\d+)', plain_text)
-                        
-                        if page_markers:
-                            for page_str in page_markers:
-                                try:
-                                    page_no = int(page_str)
-                                    page_numbers.add(page_no)
-                                    
-                                    # Track start and end pages
-                                    if start_page is None or page_no < start_page:
-                                        start_page = page_no
-                                    if end_page is None or page_no > end_page:
-                                        end_page = page_no
-                                except ValueError:
-                                    pass
-                        
-                        # If no page markers found in the text, try to find which pages this chunk belongs to
-                        if not page_numbers and result.page_content:
-                            for page_num, page_content in result.page_content.items():
-                                if plain_text in page_content:
-                                    page_numbers.add(page_num)
-                                    
-                                    # Track start and end pages
-                                    if start_page is None or page_num < start_page:
-                                        start_page = page_num
-                                    if end_page is None or page_num > end_page:
-                                        end_page = page_num
-                        
-                        if page_numbers:
-                            sorted_pages = sorted(list(page_numbers))
-                            chunk_obj = Chunk(
-                                text=plain_text,
-                                metadata=metadata,
-                                page_numbers=sorted_pages,
-                                start_page=start_page,
-                                end_page=end_page
-                            )
-                            
-                            # Also add page info to metadata
-                            chunk_obj.metadata['page_numbers'] = sorted_pages
-                            chunk_obj.metadata['start_page'] = start_page
-                            chunk_obj.metadata['end_page'] = end_page
-                            
-                            # Add a human-readable page range
-                            if start_page == end_page:
-                                chunk_obj.metadata['page_range'] = f"Page {start_page}"
-                            else:
-                                chunk_obj.metadata['page_range'] = f"Pages {start_page}-{end_page}"
-                        else:
-                            chunk_obj = Chunk(text=plain_text, metadata=metadata)
-                    else:
-                        chunk_obj = Chunk(text=plain_text, metadata=metadata)
-                    
-                    chunks.append(chunk_obj)
-                
-                chunking_results.append(
-                    ChunkingResult(
-                        job_id=job_id,
-                        filename=result.filename,
-                        chunks=chunks
-                    )
-                )
-            except Exception as e:
-                logging.error(f"Error chunking document {result.filename}: {str(e)}")
-                chunking_results.append(
-                    ChunkingResult(
-                        job_id=job_id,
-                        filename=result.filename,
-                        error=f"Error chunking document: {str(e)}"
-                    )
-                )
-        
-        return chunking_results
 
     def chunk_text_directly(
         self, 
@@ -660,110 +463,59 @@ class DocumentConverterService:
         include_page_numbers: bool = False
     ) -> ChunkingResult:
         """
-        Chunk text directly without going through the document conversion process.
+        Chunk text directly without requiring a conversion job.
         
         Args:
-            text: The text to chunk
-            filename: A name to identify the source (for reporting purposes)
+            text: The text content to chunk
+            filename: A name to identify the source
             max_tokens: Maximum number of tokens per chunk
             merge_peers: Whether to merge undersized peer chunks
-            include_page_numbers: If True, attempts to extract page numbers from text with format "## Page X"
+            include_page_numbers: Whether to include page number references in chunk metadata
             
         Returns:
             ChunkingResult: The chunking result
         """
+        # Initialize the chunker
+        chunker = SDPMChunker(
+            embedding_model="minishlab/potion-base-8M",
+            threshold=0.5,                              # Similarity threshold (0-1)
+            chunk_size=512,                             # Maximum tokens per chunk
+            min_sentences=1,                            # Initial sentences per chunk
+            skip_window=1                               # Number of chunks to skip when looking for similaritie
+        )
+        
         try:
-            # Initialize the chunker
-            chunker = SDPMChunker(
-                chunk_size=max_tokens,
-                threshold=0.5,
-                min_sentences=1,
-                skip_window=1
-            )
+            # Process the text through the chunker
+            chunk_results = chunker(text)
             
-            # Chunk the text
-            chonkie_chunks = chunker.chunk(text)
-            
-            # Process the chunks
+            # Convert chunker results to our Chunk model
             chunks = []
-            for chunk in chonkie_chunks:
-                # Get the plain text from the chunk
-                plain_text = chunk.text
-                
-                # Create additional metadata dictionary
-                metadata = {
-                    "token_count": chunk.token_count,
-                    "start_index": chunk.start_index,
-                    "end_index": chunk.end_index
+            for chunk_result in chunk_results:
+                chunk_metadata = {
+                    "token_count": str(chunk_result.token_count),
+                    "sentence_count": str(len(chunk_result.sentences))
                 }
                 
-                # Add sentence information if available
-                if hasattr(chunk, "sentences") and chunk.sentences:
-                    metadata["sentence_count"] = len(chunk.sentences)
-                
-                # Try to extract page numbers if requested
-                if include_page_numbers:
-                    # Look for page markers in the text (e.g., "## Page 5")
-                    page_numbers = set()
-                    start_page = None
-                    end_page = None
-                    
-                    # Simple regex to find page markers
-                    import re
-                    page_markers = re.findall(r'##\s*Page\s+(\d+)', plain_text)
-                    
-                    if page_markers:
-                        for page_str in page_markers:
-                            try:
-                                page_no = int(page_str)
-                                page_numbers.add(page_no)
-                                
-                                # Track start and end pages
-                                if start_page is None or page_no < start_page:
-                                    start_page = page_no
-                                if end_page is None or page_no > end_page:
-                                    end_page = page_no
-                            except ValueError:
-                                pass
-                    
-                    if page_numbers:
-                        sorted_pages = sorted(list(page_numbers))
-                        chunk_obj = Chunk(
-                            text=plain_text,
-                            metadata=metadata,
-                            page_numbers=sorted_pages,
-                            start_page=start_page,
-                            end_page=end_page
-                        )
-                        
-                        # Also add page info to metadata
-                        chunk_obj.metadata['page_numbers'] = sorted_pages
-                        chunk_obj.metadata['start_page'] = start_page
-                        chunk_obj.metadata['end_page'] = end_page
-                        
-                        # Add a human-readable page range
-                        if start_page == end_page:
-                            chunk_obj.metadata['page_range'] = f"Page {start_page}"
-                        else:
-                            chunk_obj.metadata['page_range'] = f"Pages {start_page}-{end_page}"
-                    else:
-                        chunk_obj = Chunk(text=plain_text, metadata=metadata)
-                else:
-                    chunk_obj = Chunk(text=plain_text, metadata=metadata)
-                
-                chunks.append(chunk_obj)
+                chunks.append(Chunk(
+                    text=chunk_result.text,
+                    metadata=chunk_metadata,
+                    page_numbers=None,  # No page numbers for direct text chunking
+                    start_page=None,
+                    end_page=None
+                ))
             
             return ChunkingResult(
-                job_id=str(uuid.uuid4()),
+                job_id=str(uuid.uuid4()),  # Generate a new ID for direct chunking
                 filename=filename,
                 chunks=chunks
             )
+            
         except Exception as e:
-            logging.error(f"Error chunking text: {str(e)}")
+            logging.error(f"Error chunking text directly: {str(e)}")
             return ChunkingResult(
                 job_id=str(uuid.uuid4()),
                 filename=filename,
-                error=f"Error chunking text: {str(e)}"
+                error=f"Error during chunking: {str(e)}"
             )
 
     def convert_document_with_pages(self, document: Tuple[str, BytesIO], **kwargs) -> ConversionResult:
