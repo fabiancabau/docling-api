@@ -368,6 +368,65 @@ class DocumentConverterService:
                 status="FAILURE",
                 error=str(task.result))
 
+    def chunk_text_directly(self, text: str, filename: str = "input.txt", max_tokens: int = 512, merge_peers: bool = True, include_page_numbers: bool = False) -> ChunkingResult:
+        """Convert text directly without requiring a conversion job.
+
+        Args:
+            text: The text content to chunk
+            filename: A name to identify the source
+            max_tokens: Maximum number of tokens per chunk
+            merge_peers: Whether to merge undersized peer chunks
+            include_page_numbers: Whether to include page number references in chunk metadata
+
+        Returns:
+            ChunkingResult: The chunking result
+        """
+        try:
+            # Initialize the chunker
+            chunker = SDPMChunker(
+                embedding_model="minishlab/potion-base-8M",  # Default recommended model
+                mode="window",                              # Mode for grouping sentences
+                threshold="auto",                           # Auto-calculate similarity threshold
+                chunk_size=max_tokens,                      # Maximum tokens per chunk
+                similarity_window=1,                        # Number of sentences for similarity calculation
+                min_sentences=1                             # Initial sentences per chunk
+            )
+            
+            # Process the text through the chunker
+            chunk_results = chunker(text)
+            
+            # Convert chunker results to our Chunk model
+            chunks = []
+            for chunk_result in chunk_results:
+                chunk_metadata = {
+                    "token_count": str(chunk_result.token_count),
+                    "sentence_count": str(len(chunk_result.sentences))
+                }
+                
+                chunks.append(Chunk(
+                    text=chunk_result.text,
+                    metadata=chunk_metadata,
+                    page_numbers=None,
+                    start_page=None,
+                    end_page=None
+                ))
+            
+            return ChunkingResult(
+                job_id=str(uuid.uuid4()),
+                filename=filename,
+                status=ChunkingStatus.SUCCESS,
+                chunks=chunks
+            )
+            
+        except Exception as e:
+            logging.error(f"Error chunking text directly: {str(e)}")
+            return ChunkingResult(
+                job_id=str(uuid.uuid4()),
+                filename=filename,
+                status=ChunkingStatus.FAILURE,
+                error=f"Error during chunking: {str(e)}"
+            )
+
     def chunk_document_from_job(
         self, 
         job_id: str, 
@@ -375,8 +434,7 @@ class DocumentConverterService:
         merge_peers: bool = True,
         include_page_numbers: bool = False
     ) -> ChunkingResult:
-        """
-        Chunk a document from a conversion job.
+        """Chunk a document from a conversion job.
 
         Args:
             job_id: The ID of the conversion job
@@ -389,10 +447,10 @@ class DocumentConverterService:
         """
         try:
             # Get the conversion job result
-            job_result = self.get_batch_conversion_task_result(job_id, include_page_numbers=True)
+            job_result = self.get_single_document_task_result(job_id, include_page_numbers=True)
             
             # Check if job was successful
-            if job_result.status != "SUCCESS" or not job_result.conversion_results:
+            if job_result.status != "SUCCESS" or not job_result.result:
                 return ChunkingResult(
                     job_id=job_id,
                     filename="unknown",
@@ -400,23 +458,22 @@ class DocumentConverterService:
                     error=f"Failed to retrieve valid conversion result: {job_result.error or 'No conversion results found'}"
                 )
             
-            # Get the first conversion result (assuming single document per job)
-            conversion_result = job_result.conversion_results[0].result
+            # Get the conversion result
+            conversion_result = job_result.result
             filename = conversion_result.filename
             
             # Initialize the chunker
             chunker = SDPMChunker(
-                embedding_model="minishlab/potion-base-8M",
-                threshold=0.5,                              # Similarity threshold (0-1)
+                embedding_model="minishlab/potion-base-8M",  # Default recommended model
+                mode="window",                              # Mode for grouping sentences
+                threshold="auto",                           # Auto-calculate similarity threshold
                 chunk_size=max_tokens,                      # Maximum tokens per chunk
-                min_sentences=1,                            # Initial sentences per chunk
-                skip_window=1,                              # Number of chunks to skip when looking for similarities
-                min_characters_per_sentence=12,
-                merge_peers=merge_peers
+                similarity_window=1,                        # Number of sentences for similarity calculation
+                min_sentences=1                             # Initial sentences per chunk
             )
             
             # Process the text through the chunker
-            chunk_results = chunker(conversion_result.text)
+            chunk_results = chunker(conversion_result.markdown)
             
             # Convert chunker results to our Chunk model and add page numbers
             chunks = []
@@ -431,16 +488,17 @@ class DocumentConverterService:
                 sorted_pages = sorted(conversion_result.page_content.items(), key=lambda x: int(x[0]))
                 
                 for page_num, content in sorted_pages:
-                    page_length = len(content)
-                    # Map each character position to its page number
-                    for i in range(current_position, current_position + page_length):
-                        text_to_page_map[i] = int(page_num)
-                    current_position += page_length
+                    if content:  # Skip None or empty content
+                        page_length = len(content)
+                        # Map each character position to its page number
+                        for i in range(current_position, current_position + page_length):
+                            text_to_page_map[i] = int(page_num)
+                        current_position += page_length
                 
                 # Now process each chunk and determine its page range
                 for chunk_result in chunk_results:
                     # Find the start position of this chunk in the full text
-                    start_pos = conversion_result.text.find(chunk_result.text)
+                    start_pos = conversion_result.markdown.find(chunk_result.text)
                     if start_pos == -1:
                         # If exact match not found (possible due to whitespace differences)
                         # use a more flexible approach or skip page numbering for this chunk
@@ -535,8 +593,7 @@ class DocumentConverterService:
         merge_peers: bool = True,
         include_page_numbers: bool = False
     ) -> ChunkingResult:
-        """
-        Chunk text directly without requiring a conversion job.
+        """Convert text directly without requiring a conversion job.
         
         Args:
             text: The text content to chunk
@@ -548,18 +605,17 @@ class DocumentConverterService:
         Returns:
             ChunkingResult: The chunking result
         """
-        # Initialize the chunker
-        chunker = SDPMChunker(
-            embedding_model="minishlab/potion-base-8M",
-            threshold=0.5,                              # Similarity threshold (0-1)
-            chunk_size=max_tokens,                             # Maximum tokens per chunk
-            min_sentences=1,                            # Initial sentences per chunk
-            skip_window=1,                               # Number of chunks to skip when looking for similaritie,
-            min_characters_per_sentence=12,
-            merge_peers=merge_peers
-        )
-        
         try:
+            # Initialize the chunker
+            chunker = SDPMChunker(
+                embedding_model="minishlab/potion-base-8M",  # Default recommended model
+                mode="window",                              # Mode for grouping sentences
+                threshold="auto",                           # Auto-calculate similarity threshold
+                chunk_size=max_tokens,                      # Maximum tokens per chunk
+                similarity_window=1,                        # Number of sentences for similarity calculation
+                min_sentences=1                             # Initial sentences per chunk
+            )
+            
             # Process the text through the chunker
             chunk_results = chunker(text)
             
@@ -580,7 +636,7 @@ class DocumentConverterService:
                 ))
             
             return ChunkingResult(
-                job_id=str(uuid.uuid4()),  # Generate a new ID for direct chunking
+                job_id=None,
                 filename=filename,
                 status=ChunkingStatus.SUCCESS,
                 chunks=chunks
@@ -589,15 +645,14 @@ class DocumentConverterService:
         except Exception as e:
             logging.error(f"Error chunking text directly: {str(e)}")
             return ChunkingResult(
-                job_id=str(uuid.uuid4()),
+                job_id=None,
                 filename=filename,
                 status=ChunkingStatus.FAILURE,
                 error=f"Error during chunking: {str(e)}"
             )
-
+    
     def convert_document_with_pages(self, document: Tuple[str, BytesIO], **kwargs) -> ConversionResult:
-        """
-        Convert a document and include page-by-page content in the result.
+        """Convert a document and include page-by-page content in the result.
         
         Args:
             document: A tuple containing the filename and file content
@@ -605,12 +660,31 @@ class DocumentConverterService:
             
         Returns:
             ConversionResult: The conversion result with page-by-page content
+            
+        Raises:
+            HTTPException: If the document conversion fails
         """
-        result = self.document_converter.convert(document, **kwargs)
-        if result.error:
-            logging.error(f"Failed to convert {document[0]}: {result.error}")
-            raise HTTPException(status_code=500, detail=result.error)
-        return result
+        try:
+            # Convert the document using the document converter
+            result = self.document_converter.convert(document, **kwargs)
+            
+            if result.error:
+                logging.error(f"Failed to convert {document[0]}: {result.error}")
+                raise HTTPException(status_code=500, detail=result.error)
+            
+            return result
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = f"Error converting document {document[0]}: {str(e)}"
+            logging.error(error_msg)
+            return ConversionResult(
+                filename=document[0],
+                text="",
+                page_content={},
+                error=error_msg
+            )
 
     def get_markdown_with_page_numbers(self, result: ConversionResult) -> str:
         """

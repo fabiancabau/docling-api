@@ -49,15 +49,14 @@ def chunk_document_from_job(
         conversion_result = job_result.conversion_results[0].result
         filename = conversion_result.filename
         
-        # Initialize the chunker
+        # Initialize the chunker with recommended settings
         chunker = SDPMChunker(
-            embedding_model="minishlab/potion-base-8M",
-            threshold=0.5,                              # Similarity threshold (0-1)
+            embedding_model="minishlab/potion-base-8M",  # Default recommended model
+            mode="window",                              # Mode for grouping sentences
+            threshold="auto",                           # Auto-calculate similarity threshold
             chunk_size=max_tokens,                      # Maximum tokens per chunk
-            min_sentences=1,                            # Initial sentences per chunk
-            skip_window=1,                              # Number of chunks to skip when looking for similarities
-            min_characters_per_sentence=12,
-            merge_peers=merge_peers
+            similarity_window=1,                        # Number of sentences for similarity calculation
+            min_sentences=1                             # Initial sentences per chunk
         )
         
         # Process the text through the chunker

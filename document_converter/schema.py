@@ -46,7 +46,7 @@ class Chunk(BaseModel):
     end_page: Optional[int] = Field(None, description="The page number where this chunk ends")
 
 
-class ChunkingStatus(Enum):
+class ChunkingStatus(str, Enum):
     SUCCESS = "SUCCESS"
     IN_PROGRESS = "IN_PROGRESS"
     FAILURE = "FAILURE"
