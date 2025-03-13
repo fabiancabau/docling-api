@@ -10,7 +10,8 @@ from document_converter.schema import (
     ConversionResult,
     ChunkingResult,
     TextChunkingRequest,
-    HealthCheckResponse
+    HealthCheckResponse,
+    ChunkingStatus
 )
 from document_converter.service import DocumentConverterService, DoclingDocumentConversion
 from document_converter.utils import is_file_format_supported
@@ -393,9 +394,9 @@ async def health_check():
     response_model=ChunkingResult,
     responses={
         200: {"description": "Document successfully chunked"},
-        400: {"description": "Invalid request or chunking parameters"},
+        202: {"description": "Chunking job is in progress"},
         404: {"description": "Job not found"},
-        422: {"description": "Job failed or is not completed yet"}
+        422: {"description": "Error during chunking"}
     },
     description="Chunk a converted document using a completed job ID with Semantic Double-Pass Merging",
 )
@@ -425,8 +426,20 @@ async def chunk_document_from_job(
             include_page_numbers=include_page_numbers,
         )
         
-        # Return error response if there's an error
-        if result.error:
+        # Return appropriate status code based on chunking status
+        if result.status == ChunkingStatus.IN_PROGRESS:
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=result.model_dump(exclude_none=True)
+            )
+            
+        if result.status == ChunkingStatus.NOT_FOUND:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content=result.model_dump(exclude_none=True)
+            )
+            
+        if result.status == ChunkingStatus.FAILURE:
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 content=result.model_dump(exclude_none=True)
@@ -436,11 +449,6 @@ async def chunk_document_from_job(
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content=result.model_dump(exclude_none=True)
-        )
-    except KeyError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}"
         )
     except Exception as e:
         logging.error(f"Error in chunk_document_from_job: {str(e)}")
@@ -520,8 +528,7 @@ async def chunk_batch_documents_from_job(
     response_model=ChunkingResult,
     responses={
         200: {"description": "Text successfully chunked"},
-        400: {"description": "Invalid request or chunking parameters"},
-        422: {"description": "Error during text chunking"}
+        422: {"description": "Error during chunking"}
     },
     description="Chunk text directly without requiring a conversion job",
 )
@@ -538,8 +545,8 @@ async def chunk_text_directly(
             include_page_numbers=request.include_page_numbers,
         )
         
-        # Return error response if there's an error
-        if result.error:
+        # Return appropriate status code based on chunking status
+        if result.status == ChunkingStatus.FAILURE:
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 content=result.model_dump(exclude_none=True)

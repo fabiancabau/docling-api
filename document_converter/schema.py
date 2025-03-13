@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Dict, Any, Union
 import base64
+from enum import Enum
 
 
 class ImageData(BaseModel):
@@ -45,9 +46,18 @@ class Chunk(BaseModel):
     end_page: Optional[int] = Field(None, description="The page number where this chunk ends")
 
 
+class ChunkingStatus(Enum):
+    SUCCESS = "SUCCESS"
+    IN_PROGRESS = "IN_PROGRESS"
+    FAILURE = "FAILURE"
+    NOT_FOUND = "NOT_FOUND"
+    INVALID_JOB = "INVALID_JOB"
+
+
 class ChunkingResult(BaseModel):
     job_id: str = Field(..., description="The id of the original conversion job")
     filename: str = Field(..., description="The filename of the document")
+    status: ChunkingStatus = Field(..., description="The status of the chunking operation")
     chunks: Optional[List[Chunk]] = Field(None, description="The chunks extracted from the document")
     error: Optional[str] = Field(None, description="The error that occurred during chunking")
 
