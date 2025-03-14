@@ -4,11 +4,8 @@ import uuid
 from io import BytesIO
 
 from .models import (
-    ChunkingResult, 
-    ChunkingStatus, 
+    ChunkingResult,
     Chunk,
-    ConversionResult,
-    BatchConversionJobResult
 )
 
 from sdpm import SDPMChunker
@@ -41,7 +38,6 @@ def chunk_document_from_job(
             return ChunkingResult(
                 job_id=job_id,
                 filename="unknown",
-                status=ChunkingStatus.FAILURE,
                 error=f"Failed to retrieve valid conversion result: {job_result.error or 'No conversion results found'}"
             )
         
@@ -158,7 +154,6 @@ def chunk_document_from_job(
         return ChunkingResult(
             job_id=job_id,
             filename=filename,
-            status=ChunkingStatus.SUCCESS,
             chunks=chunks
         )
         
@@ -167,6 +162,5 @@ def chunk_document_from_job(
         return ChunkingResult(
             job_id=job_id,
             filename="unknown",
-            status=ChunkingStatus.FAILURE,
             error=f"Error during chunking: {str(e)}"
         ) 

@@ -26,8 +26,7 @@ from document_converter.schema import (
     ConversionResult, 
     ImageData, 
     ChunkingResult, 
-    Chunk,
-    ChunkingStatus
+    Chunk
 )
 from document_converter.utils import handle_csv_file
 
@@ -414,7 +413,6 @@ class DocumentConverterService:
             return ChunkingResult(
                 job_id=str(uuid.uuid4()),
                 filename=filename,
-                status=ChunkingStatus.SUCCESS,
                 chunks=chunks
             )
             
@@ -423,7 +421,6 @@ class DocumentConverterService:
             return ChunkingResult(
                 job_id=str(uuid.uuid4()),
                 filename=filename,
-                status=ChunkingStatus.FAILURE,
                 error=f"Error during chunking: {str(e)}"
             )
 
@@ -454,7 +451,6 @@ class DocumentConverterService:
                 return ChunkingResult(
                     job_id=job_id,
                     filename="unknown",
-                    status=ChunkingStatus.FAILURE,
                     error=f"Failed to retrieve valid conversion result: {job_result.error or 'No conversion results found'}"
                 )
             
@@ -572,7 +568,6 @@ class DocumentConverterService:
             return ChunkingResult(
                 job_id=job_id,
                 filename=filename,
-                status=ChunkingStatus.SUCCESS,
                 chunks=chunks
             )
             
@@ -581,7 +576,6 @@ class DocumentConverterService:
             return ChunkingResult(
                 job_id=job_id,
                 filename="unknown",
-                status=ChunkingStatus.FAILURE,
                 error=f"Error during chunking: {str(e)}"
             )
             
