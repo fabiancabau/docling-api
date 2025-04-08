@@ -43,7 +43,7 @@ RUN ARCH=$(uname -m) && \
     else \
     # For x86_64 with GPU support
     echo "Installing PyTorch with CUDA support" && \
-    uv pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; \
+    uv pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu181; \
     fi
 
 # Install the project in non-editable mode
