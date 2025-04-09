@@ -19,64 +19,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-# Copy dependency files and README
-COPY pyproject.toml uv.lock README.md ./
+RUN pip install docling
 
-# Install dependencies but not the project itself
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project
-
-# Copy the rest of the project
-COPY . .
-
-# Better GPU detection: Check both architecture and if NVIDIA is available
-RUN echo "Installing PyTorch with CUDA support" && \
-    uv pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu181; 
-
-# Install the project in non-editable mode
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-editable
-
-# Download models for the pipeline
-RUN uv run python -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True)"
+RUN python -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True)"
 
 # Pre-download EasyOCR models with better GPU detection
-RUN echo "Downloading EasyOCR models with GPU support" && \
-    uv run python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=True); print('EasyOCR GPU models downloaded successfully')"
+RUN python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=True); print('EasyOCR GPU models downloaded successfully')"
 
-# Production stage
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
-WORKDIR /app
-
-# Install runtime dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends redis-server libgl1 libglib2.0-0 curl && \
-    rm -rf /var/lib/apt/lists/*
-
-# Set environment variables
-ENV HF_HOME=/app/.cache/huggingface \
-    TORCH_HOME=/app/.cache/torch \
-    PYTHONPATH=/app \
-    OMP_NUM_THREADS=4 \
-    UV_COMPILE_BYTECODE=1
-
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
-
-# Create a non-root user
-RUN useradd --create-home app && \
-    mkdir -p /app && \
-    chown -R app:app /app /tmp
-
-# Copy the virtual environment from the builder stage
-COPY --from=builder --chown=app:app /app/.venv /app/.venv
-ENV PATH="/app/.venv/bin:$PATH"
-
-# Copy necessary files for the application
-COPY --chown=app:app . .
-
-# Switch to non-root user
-USER app
-
-EXPOSE 8080
-CMD ["uvicorn", "main:app", "--port", "8080", "--host", "0.0.0.0"]
