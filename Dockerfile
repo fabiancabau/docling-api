@@ -30,8 +30,24 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY . .
 
 # Better GPU detection: Check both architecture and if NVIDIA is available
-RUN echo "Installing PyTorch with CUDA support" && \
-    uv pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu181; 
+RUN ARCH=$(uname -m) && \
+    if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
+    USE_GPU=false; \
+    else \
+    USE_GPU=true; \
+    fi && \
+    echo "Detected GPU availability: $USE_GPU" && \
+    # For PyTorch installation with architecture detection
+    uv pip uninstall -y torch torchvision torchaudio || true && \
+    if [ "$USE_GPU" = "false" ]; then \
+    # For CPU or ARM architectures or no NVIDIA
+    echo "Installing PyTorch for CPU" && \
+    uv pip install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
+    else \
+    # For x86_64 with GPU support
+    echo "Installing PyTorch with CUDA support" && \
+    uv pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu181; \
+    fi
 
 # Install the project in non-editable mode
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -41,8 +57,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN uv run python -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True)"
 
 # Pre-download EasyOCR models with better GPU detection
-RUN echo "Downloading EasyOCR models with GPU support" && \
-    uv run python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=True); print('EasyOCR GPU models downloaded successfully')"
+RUN ARCH=$(uname -m) && \
+    if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
+    echo "Downloading EasyOCR models for CPU" && \
+    uv run python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=False); print('EasyOCR CPU models downloaded successfully')"; \
+    else \
+    echo "Downloading EasyOCR models with GPU support" && \
+    uv run python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=True); print('EasyOCR GPU models downloaded successfully')"; \
+    fi
 
 # Production stage
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
