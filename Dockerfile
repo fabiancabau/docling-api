@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Install build dependencies
 RUN apt-get update && \
-    apt-get install wget && \
+    apt-get install wget -y && \
     apt-get install -y --no-install-recommends libgl1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
