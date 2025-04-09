@@ -111,5 +111,5 @@ RUN unzip craft_mlt_25k.zip -d ~/.EasyOCR/model
 # Switch to non-root user
 USER app
 
-EXPOSE 8080
+EXPOSE 8001
 CMD ["uvicorn", "main:app", "--port", "8001", "--host", "0.0.0.0"]
