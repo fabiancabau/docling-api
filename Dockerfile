@@ -57,14 +57,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN uv run python -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True)"
 
 # Pre-download EasyOCR models with better GPU detection
-RUN ARCH=$(uname -m) && \
-    if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
-    echo "Downloading EasyOCR models for CPU" && \
-    uv run python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=False); print('EasyOCR CPU models downloaded successfully')"; \
-    else \
-    echo "Downloading EasyOCR models with GPU support" && \
-    uv run python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=True); print('EasyOCR GPU models downloaded successfully')"; \
-    fi
+# Pre-download EasyOCR models with safer encoding
+RUN uv run python -c "import easyocr, sys; sys.stdout = open(1, 'w', encoding='utf-8', errors='ignore'); reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=True); print('✅ EasyOCR GPU models downloaded successfully')"
 
 # Production stage
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
