@@ -26,14 +26,13 @@ services:
       retries: 3
       start_period: 15s
     deploy:
-      resources:  
+      resources:
         reservations:
-          memory: 6G
+          memory: 6gb
           devices:
             - driver: nvidia
               count: 1
               capabilities: [ gpu ]
-          
     depends_on:
       - redis
 
