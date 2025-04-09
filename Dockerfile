@@ -55,45 +55,44 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Download models for the pipeline
 RUN uv run python -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True)"
-CMD sleep infinity
 
 # Pre-download EasyOCR models with better GPU detection
 # Pre-download EasyOCR models with safer encoding
-# RUN uv run python -c "import easyocr, sys; sys.stdout = open(1, 'w', encoding='utf-8', errors='ignore'); reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=True); print('✅ EasyOCR GPU models downloaded successfully')"
+RUN uv run python -c "import easyocr, sys; sys.stdout = open(1, 'w', encoding='utf-8', errors='ignore'); reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=True); print('✅ EasyOCR GPU models downloaded successfully')"
 
-# # Production stage
-# FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
-# WORKDIR /app
+# Production stage
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+WORKDIR /app
 
-# # Install runtime dependencies
-# RUN apt-get update && \
-#     apt-get install -y --no-install-recommends redis-server libgl1 libglib2.0-0 curl && \
-#     rm -rf /var/lib/apt/lists/*
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends redis-server libgl1 libglib2.0-0 curl && \
+    rm -rf /var/lib/apt/lists/*
 
-# # Set environment variables
-# ENV HF_HOME=/app/.cache/huggingface \
-#     TORCH_HOME=/app/.cache/torch \
-#     PYTHONPATH=/app \
-#     OMP_NUM_THREADS=4 \
-#     UV_COMPILE_BYTECODE=1
+# Set environment variables
+ENV HF_HOME=/app/.cache/huggingface \
+    TORCH_HOME=/app/.cache/torch \
+    PYTHONPATH=/app \
+    OMP_NUM_THREADS=4 \
+    UV_COMPILE_BYTECODE=1
 
-# ENV LANG=C.UTF-8 \
-#     LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 
-# # Create a non-root user
-# RUN useradd --create-home app && \
-#     mkdir -p /app && \
-#     chown -R app:app /app /tmp
+# Create a non-root user
+RUN useradd --create-home app && \
+    mkdir -p /app && \
+    chown -R app:app /app /tmp
 
-# # Copy the virtual environment from the builder stage
-# COPY --from=builder --chown=app:app /app/.venv /app/.venv
-# ENV PATH="/app/.venv/bin:$PATH"
+# Copy the virtual environment from the builder stage
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
 
-# # Copy necessary files for the application
-# COPY --chown=app:app . .
+# Copy necessary files for the application
+COPY --chown=app:app . .
 
-# # Switch to non-root user
-# USER app
+# Switch to non-root user
+USER app
 
-# EXPOSE 8080
-# CMD ["uvicorn", "main:app", "--port", "8080", "--host", "0.0.0.0"]
+EXPOSE 8080
+CMD ["uvicorn", "main:app", "--port", "8080", "--host", "0.0.0.0"]
