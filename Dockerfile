@@ -112,4 +112,4 @@ RUN unzip craft_mlt_25k.zip -d ~/.EasyOCR/model
 USER app
 
 EXPOSE 8080
-CMD ["uvicorn", "main:app", "--port", "8080", "--host", "0.0.0.0"]
+CMD ["uvicorn", "main:app", "--port", "8001", "--host", "0.0.0.0"]

@@ -53,17 +53,17 @@ services:
       x-pass-nvidia:
         - capabilities=compute,utility,graphics,video
     image: converter-gpu-image
-    command: uv run uvicorn main:app --port 8080 --host 0.0.0.0 --workers 4 --proxy-headers
+    command: uv run uvicorn main:app --port 8001 --host 0.0.0.0 --workers 4 --proxy-headers
     environment:
       - REDIS_HOST=${REDIS_HOST}
       - ENV=production
       - NVIDIA_VISIBLE_DEVICES=all
     ports:
-      - "8080:8080"
+      - "8001:8001"
     volumes:
       - ./main.py:/app/main.py
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      test: [ "CMD", "curl", "-f", "http://localhost:8001/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
