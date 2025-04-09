@@ -16,6 +16,9 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONPATH=/app \
     OMP_NUM_THREADS=4
 
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
 # Copy dependency files and README
 COPY pyproject.toml uv.lock README.md ./
 
@@ -78,6 +81,9 @@ ENV HF_HOME=/app/.cache/huggingface \
     PYTHONPATH=/app \
     OMP_NUM_THREADS=4 \
     UV_COMPILE_BYTECODE=1
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 
 # Create a non-root user
 RUN useradd --create-home app && \
