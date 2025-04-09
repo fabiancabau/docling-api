@@ -56,52 +56,49 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Download models for the pipeline
 RUN uv run python -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; artifacts_path = StandardPdfPipeline.download_models_hf(force=True)"
 
+# Pre-download EasyOCR models with better GPU detection
+RUN ARCH=$(uname -m) && \
+    if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
+    echo "Downloading EasyOCR models for CPU" && \
+    uv run python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=False); print('EasyOCR CPU models downloaded successfully')"; \
+    else \
+    echo "Downloading EasyOCR models with GPU support" && \
+    uv run python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=True); print('EasyOCR GPU models downloaded successfully')"; \
+    fi
 
-RUN sleep infinity
+# Production stage
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+WORKDIR /app
 
-# # Pre-download EasyOCR models with better GPU detection
-# RUN ARCH=$(uname -m) && \
-#     if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
-#     echo "Downloading EasyOCR models for CPU" && \
-#     uv run python -c "import easyocr; reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=False); print('EasyOCR CPU models downloaded successfully')"; \
-#     else \
-#     echo "Downloading EasyOCR models with GPU support" && \
-#     uv run python -c "import easyocr; reader = easyocr.Reader(['fr', 'de', 'es', 'en', 'it', 'pt'], gpu=True); print('EasyOCR GPU models downloaded successfully')"; \
-#     fi
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends redis-server libgl1 libglib2.0-0 curl && \
+    rm -rf /var/lib/apt/lists/*
 
-# # Production stage
-# FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
-# WORKDIR /app
+# Set environment variables
+ENV HF_HOME=/app/.cache/huggingface \
+    TORCH_HOME=/app/.cache/torch \
+    PYTHONPATH=/app \
+    OMP_NUM_THREADS=4 \
+    UV_COMPILE_BYTECODE=1
 
-# # Install runtime dependencies
-# RUN apt-get update && \
-#     apt-get install -y --no-install-recommends redis-server libgl1 libglib2.0-0 curl && \
-#     rm -rf /var/lib/apt/lists/*
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 
-# # Set environment variables
-# ENV HF_HOME=/app/.cache/huggingface \
-#     TORCH_HOME=/app/.cache/torch \
-#     PYTHONPATH=/app \
-#     OMP_NUM_THREADS=4 \
-#     UV_COMPILE_BYTECODE=1
+# Create a non-root user
+RUN useradd --create-home app && \
+    mkdir -p /app && \
+    chown -R app:app /app /tmp
 
-# ENV LANG=C.UTF-8 \
-#     LC_ALL=C.UTF-8
+# Copy the virtual environment from the builder stage
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
 
-# # Create a non-root user
-# RUN useradd --create-home app && \
-#     mkdir -p /app && \
-#     chown -R app:app /app /tmp
+# Copy necessary files for the application
+COPY --chown=app:app . .
 
-# # Copy the virtual environment from the builder stage
-# COPY --from=builder --chown=app:app /app/.venv /app/.venv
-# ENV PATH="/app/.venv/bin:$PATH"
+# Switch to non-root user
+USER app
 
-# # Copy necessary files for the application
-# COPY --chown=app:app . .
-
-# # Switch to non-root user
-# USER app
-
-# EXPOSE 8080
-# CMD ["uvicorn", "main:app", "--port", "8080", "--host", "0.0.0.0"]
+EXPOSE 8080
+CMD ["uvicorn", "main:app", "--port", "8080", "--host", "0.0.0.0"]
