@@ -75,7 +75,7 @@ WORKDIR /app
 
 # Install runtime dependencies
 RUN apt-get update && \
-    apt-get install wget -y && \
+    apt-get install wget unzip -y && \
     apt-get install -y --no-install-recommends redis-server libgl1 libglib2.0-0 curl && \
     rm -rf /var/lib/apt/lists/*
 
