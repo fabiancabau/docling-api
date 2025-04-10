@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 ARG CPU_ONLY=false
-ARG CACHEBUSTER=2
+ARG CACHEBUSTER=3
 WORKDIR /app
 
 # Install build dependencies
