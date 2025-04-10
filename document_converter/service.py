@@ -113,7 +113,7 @@ class DoclingDocumentConversion(DocumentConversionBase):
         conv_res = doc_converter.convert(DocumentStream(name=filename, stream=file), raises_on_error=False)
         doc_filename = conv_res.input.file.stem
 
-        content_text = conv_res.document.export_to_text(image_mode=ImageRefMode.PLACEHOLDER)
+        content_text = conv_res.document.export_to_text()
 
         if conv_res.errors:
             logging.error(f"Failed to convert {filename}: {conv_res.errors[0].error_message}")
@@ -141,7 +141,7 @@ class DoclingDocumentConversion(DocumentConversionBase):
         results = []
         for conv_res in conv_results:
             doc_filename = conv_res.input.file.stem
-            content_text = conv_res.document.export_to_text(image_mode=ImageRefMode.PLACEHOLDER)
+            content_text = conv_res.document.export_to_text()
 
             if conv_res.errors:
                 logging.error(f"Failed to convert {conv_res.input.name}: {conv_res.errors[0].error_message}")
