@@ -61,7 +61,7 @@ class DoclingDocumentConversion(DocumentConversionBase):
         pipeline_options = PdfPipelineOptions()
         pipeline_options.generate_page_images = False
         pipeline_options.generate_picture_images = True
-        pipeline_options.ocr_options = EasyOcrOptions(lang=["fr", "de", "es", "en", "it", "pt"])
+        pipeline_options.ocr_options = EasyOcrOptions(lang=["en"])
 
         return pipeline_options
 
@@ -112,12 +112,14 @@ class DoclingDocumentConversion(DocumentConversionBase):
         conv_res = doc_converter.convert(DocumentStream(name=filename, stream=file), raises_on_error=False)
         doc_filename = conv_res.input.file.stem
 
+        content_text = conv_res.document.export_to_text()
+
         if conv_res.errors:
             logging.error(f"Failed to convert {filename}: {conv_res.errors[0].error_message}")
             return ConversionResult(filename=doc_filename, error=conv_res.errors[0].error_message)
 
-        content_md, images = self._process_document_images(conv_res)
-        return ConversionResult(filename=doc_filename, markdown=content_md, images=images)
+        #content_md, images = self._process_document_images(conv_res)
+        return ConversionResult(filename=doc_filename, markdown=content_md, images=[])
 
     def convert_batch(
         self,
