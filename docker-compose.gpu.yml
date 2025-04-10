@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
       args:
         CPU_ONLY: "false"
+        CACHEBUSTER: ${CACHEBUSTER}
       x-bake:
         platforms:
           - linux/amd64
@@ -42,6 +43,7 @@ services:
       context: .
       args:
         CPU_ONLY: "false"
+        CACHEBUSTER: ${CACHEBUSTER}
       cache_from:
         - converter-gpu-image
       x-bake:
@@ -96,6 +98,7 @@ services:
       context: .
       args:
         CPU_ONLY: "false"
+        CACHEBUSTER: ${CACHEBUSTER}
       cache_from:
         - converter-gpu-image
       x-bake:
