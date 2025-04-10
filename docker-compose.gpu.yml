@@ -2,6 +2,7 @@ services:
   celery_worker:
     build:
       context: .
+      dockerfile: Dockerfile
       args:
         CPU_ONLY: "false"
       x-bake:
