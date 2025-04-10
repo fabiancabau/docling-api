@@ -140,14 +140,15 @@ class DoclingDocumentConversion(DocumentConversionBase):
         results = []
         for conv_res in conv_results:
             doc_filename = conv_res.input.file.stem
+            content_text = conv_res.document.export_to_text()
 
             if conv_res.errors:
                 logging.error(f"Failed to convert {conv_res.input.name}: {conv_res.errors[0].error_message}")
                 results.append(ConversionResult(filename=conv_res.input.name, error=conv_res.errors[0].error_message))
                 continue
 
-            content_md, images = self._process_document_images(conv_res)
-            results.append(ConversionResult(filename=doc_filename, markdown=content_md, images=images))
+            # content_md, images = self._process_document_images(conv_res)
+            results.append(ConversionResult(filename=doc_filename, text=context_text, images=[]))
 
         return results
 
