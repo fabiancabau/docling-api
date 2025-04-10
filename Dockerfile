@@ -76,6 +76,8 @@ RUN mkdir ~/.EasyOCR
 RUN mkdir ~/.EasyOCR/model
 RUN unzip english_g2.zip -d ~/.EasyOCR/model
 RUN unzip craft_mlt_25k.zip -d ~/.EasyOCR/model
+RUN rm -rf craft_mlt_25k.zip
+RUN rm -rf english_g2.zip
 
 
 EXPOSE 8001

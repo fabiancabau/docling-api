@@ -119,7 +119,7 @@ class DoclingDocumentConversion(DocumentConversionBase):
             return ConversionResult(filename=doc_filename, error=conv_res.errors[0].error_message)
 
         #content_md, images = self._process_document_images(conv_res)
-        return ConversionResult(filename=doc_filename, markdown=content_md, images=[])
+        return ConversionResult(filename=doc_filename, text=content_text, images=[])
 
     def convert_batch(
         self,
