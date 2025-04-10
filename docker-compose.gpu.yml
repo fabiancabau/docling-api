@@ -15,8 +15,7 @@ services:
         - capabilities=compute,utility,graphics,video
     image: converter-gpu-image
     command: uv run celery -A worker.celery_config worker --pool=solo -n worker_primary --loglevel=info
-    volumes:
-      - .:/app
+    
     environment:
       - REDIS_HOST=${REDIS_HOST}
       - ENV=production
@@ -61,8 +60,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
     ports:
       - "8001:8001"
-    volumes:
-      - .:/app
+    
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8001/health" ]
       interval: 30s
@@ -112,8 +110,7 @@ services:
     command: uv run celery -A worker.celery_config flower --port=5555
     ports:
       - "5556:5555"
-    volumes:
-      - .:/app
+    
     environment:
       - REDIS_HOST=${REDIS_HOST}
       - ENV=production
