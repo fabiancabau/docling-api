@@ -30,24 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY . .
 
 # Better GPU detection: Check both architecture and if NVIDIA is available
-RUN ARCH=$(uname -m) && \
-    if [ "$CPU_ONLY" = "true" ] || [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || ! command -v nvidia-smi >/dev/null 2>&1; then \
-    USE_GPU=false; \
-    else \
-    USE_GPU=true; \
-    fi && \
-    echo "Detected GPU availability: $USE_GPU" && \
-    # For PyTorch installation with architecture detection
-    uv pip uninstall -y torch torchvision torchaudio || true && \
-    if [ "$USE_GPU" = "false" ]; then \
-    # For CPU or ARM architectures or no NVIDIA
-    echo "Installing PyTorch for CPU" && \
-    uv pip install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
-    else \
-    # For x86_64 with GPU support
-    echo "Installing PyTorch with CUDA support" && \
-    uv pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu181; \
-    fi
+RUN uv pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 # Install the project in non-editable mode
 RUN --mount=type=cache,target=/root/.cache/uv \
